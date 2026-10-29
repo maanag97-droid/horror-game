@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -114,16 +114,1516 @@ jobs:
           package com.shadowward.horror;
 
           import android.app.Activity;
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.content.pm.ActivityInfo;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.LinearGradient;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.PorterDuff;
+          import android.graphics.PorterDuffXfermode;
+          import android.graphics.RadialGradient;
+          import android.graphics.RectF;
+          import android.graphics.Shader;
+          import android.media.AudioAttributes;
+          import android.media.AudioFormat;
+          import android.media.AudioManager;
+          import android.media.AudioTrack;
+          import android.os.Build;
           import android.os.Bundle;
-          import android.widget.TextView;
+          import android.os.VibrationEffect;
+          import android.os.Vibrator;
+          import android.view.MotionEvent;
+          import android.view.SurfaceHolder;
+          import android.view.SurfaceView;
+          import android.view.View;
+          import android.view.Window;
+          import android.view.WindowManager;
 
+          import java.util.ArrayList;
+          import java.util.Iterator;
+          import java.util.List;
+          import java.util.Random;
+
+          /**
+           * SHADOW WARD: 2D Top-Down Survival Horror Game
+           * Designed for Samsung Galaxy A17 5G (1080x2340 Super AMOLED 90Hz Display).
+           * Zero external assets required: procedural maps, raycast flashlight shadows,
+           * multi-touch dual joysticks, 3 horror monster AI types, and synthesized audio.
+           */
           public class MainActivity extends Activity {
+
+              private HorrorGameView gameView;
+
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  TextView tv = new TextView(this);
-                  tv.setText("Shadow Ward");
-                  setContentView(tv);
+                  requestWindowFeature(Window.FEATURE_NO_TITLE);
+                  getWindow().setFlags(
+                          WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                          WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                  );
+                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                  hideSystemUI();
+
+                  gameView = new HorrorGameView(this);
+                  setContentView(gameView);
+              }
+
+              private void hideSystemUI() {
+                  View decorView = getWindow().getDecorView();
+                  decorView.setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_FULLSCREEN
+                  );
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  hideSystemUI();
+                  if (gameView != null) {
+                      gameView.resume();
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  if (gameView != null) {
+                      gameView.pause();
+                  }
+              }
+
+              // =========================================================================
+              // MAIN GAME SURFACE VIEW
+              // =========================================================================
+              public static class HorrorGameView extends SurfaceView implements Runnable {
+
+                  private Thread gameThread;
+                  private volatile boolean running = false;
+                  private final SurfaceHolder holder;
+                  private final SharedPreferences prefs;
+                  private final Vibrator vibrator;
+                  private final Random rng = new Random();
+
+                  // Game States
+                  private static final int STATE_MENU = 0;
+                  private static final int STATE_PLAYING = 1;
+                  private static final int STATE_NIGHT_CLEARED = 2;
+                  private static final int STATE_GAME_OVER = 3;
+                  private int gameState = STATE_MENU;
+
+                  // World & Tile Grid Constants
+                  private static final int MAP_COLS = 36;
+                  private static final int MAP_ROWS = 26;
+                  private static final float TILE_SIZE = 96f;
+                  private static final int TILE_WALL = 1;
+                  private static final int TILE_FLOOR = 0;
+                  private static final int TILE_EXIT_LOCKED = 2;
+                  private static final int TILE_EXIT_OPEN = 3;
+
+                  private final int[][] map = new int[MAP_ROWS][MAP_COLS];
+                  private final List<RectF> wallRects = new ArrayList<>();
+                  private final List<BloodDecal> decals = new ArrayList<>();
+                  private final List<Generator> generators = new ArrayList<>();
+                  private final List<Pickup> pickups = new ArrayList<>();
+                  private final List<Monster> monsters = new ArrayList<>();
+                  private final List<Particle> particles = new ArrayList<>();
+                  private final List<SoundRipple> ripples = new ArrayList<>();
+
+                  // Player State
+                  private float playerX;
+                  private float playerY;
+                  private float playerRadius = 26f;
+                  private float aimAngle = 0f; // Radians
+                  private float health = 100f;
+                  private float stamina = 100f;
+                  private float battery = 100f;
+                  private boolean flashlightOn = true;
+                  private boolean sprinting = false;
+                  private boolean staminaExhausted = false;
+
+                  // Progression & Metrics
+                  private int currentNight = 1;
+                  private int bestNight = 1;
+                  private int totalGeneratorsRepaired = 0;
+                  private int generatorsNeeded = 4;
+                  private int generatorsDone = 0;
+                  private float exitX, exitY;
+                  private float dangerLevel = 0f; // 0..1 proximity terror
+                  private float heartbeatTimer = 0f;
+                  private float screenShake = 0f;
+                  private float jumpscareFlash = 0f;
+                  private String statusBanner = "";
+                  private float statusBannerTimer = 0f;
+
+                  // Touch Controls (Dual Virtual Joysticks + Action Buttons)
+                  private int movePointerId = -1;
+                  private float moveOriginX, moveOriginY, moveCurrX, moveCurrY;
+                  private float moveInputX = 0f, moveInputY = 0f;
+
+                  private int aimPointerId = -1;
+                  private float aimOriginX, aimOriginY, aimCurrX, aimCurrY;
+
+                  private int sprintPointerId = -1;
+                  private final RectF btnFlashlight = new RectF();
+                  private final RectF btnSprint = new RectF();
+                  private final RectF btnRadarPing = new RectF();
+                  private float radarCooldown = 0f;
+                  private float radarActiveTimer = 0f;
+
+                  // Rendering Objects
+                  private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint darknessPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint lightClearPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Paint coneGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Path lightPolyPath = new Path();
+
+                  private SoundSynthesizer soundSynth;
+
+                  public HorrorGameView(Context context) {
+                      super(context);
+                      holder = getHolder();
+                      prefs = context.getSharedPreferences("shadow_ward_prefs", Context.MODE_PRIVATE);
+                      bestNight = prefs.getInt("best_night", 1);
+                      vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+
+                      lightClearPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_OUT));
+                      soundSynth = new SoundSynthesizer();
+                  }
+
+                  public void resume() {
+                      running = true;
+                      soundSynth.start();
+                      gameThread = new Thread(this, "HorrorGameLoop");
+                      gameThread.start();
+                  }
+
+                  public void pause() {
+                      running = false;
+                      soundSynth.stop();
+                      try {
+                          if (gameThread != null) {
+                              gameThread.join(500);
+                          }
+                      } catch (InterruptedException ignored) {
+                      }
+                  }
+
+                  @Override
+                  public void run() {
+                      long lastTime = System.nanoTime();
+                      while (running) {
+                          long now = System.nanoTime();
+                          float dt = (now - lastTime) / 1_000_000_000f;
+                          lastTime = now;
+                          if (dt > 0.05f) dt = 0.05f; // Cap delta time
+
+                          if (holder.getSurface().isValid()) {
+                              Canvas canvas = holder.lockCanvas();
+                              if (canvas != null) {
+                                  try {
+                                      updateUIButtonBounds(canvas.getWidth(), canvas.getHeight());
+                                      if (gameState == STATE_PLAYING) {
+                                          updateGame(dt);
+                                      }
+                                      renderGame(canvas, dt);
+                                  } finally {
+                                      holder.unlockCanvasAndPost(canvas);
+                                  }
+                              }
+                          }
+                      }
+                  }
+
+                  // =====================================================================
+                  // LEVEL GENERATION (PROCEDURAL HAUNTED ASYLUM)
+                  // =====================================================================
+                  private void startNewGame(int night) {
+                      currentNight = night;
+                      if (night == 1) {
+                          health = 100f;
+                          battery = 100f;
+                          totalGeneratorsRepaired = 0;
+                      } else {
+                          health = Math.min(100f, health + 35f);
+                          battery = Math.min(100f, battery + 50f);
+                      }
+                      stamina = 100f;
+                      flashlightOn = true;
+                      sprinting = false;
+                      generatorsNeeded = Math.min(7, 3 + night);
+                      generatorsDone = 0;
+                      radarCooldown = 0f;
+                      radarActiveTimer = 0f;
+                      jumpscareFlash = 0f;
+                      screenShake = 0f;
+
+                      generateAsylumMap();
+                      setBanner("NIGHT " + currentNight + ": REPAIR " + generatorsNeeded + " GENERATORS TO POWER THE EXIT", 4.5f);
+                      gameState = STATE_PLAYING;
+                  }
+
+                  private void generateAsylumMap() {
+                      wallRects.clear();
+                      decals.clear();
+                      generators.clear();
+                      pickups.clear();
+                      monsters.clear();
+                      particles.clear();
+                      ripples.clear();
+
+                      for (int r = 0; r < MAP_ROWS; r++) {
+                          for (int c = 0; c < MAP_COLS; c++) {
+                              map[r][c] = TILE_WALL;
+                          }
+                      }
+
+                      // Carve interconnected rooms & corridors
+                      List<int[]> roomCenters = new ArrayList<>();
+                      int roomAttempts = 22;
+                      for (int i = 0; i < roomAttempts; i++) {
+                          int rw = 3 + rng.nextInt(4);
+                          int rh = 3 + rng.nextInt(4);
+                          int rc = 2 + rng.nextInt(MAP_COLS - rw - 4);
+                          int rr = 2 + rng.nextInt(MAP_ROWS - rh - 4);
+
+                          for (int r = rr; r < rr + rh; r++) {
+                              for (int c = rc; c < rc + rw; c++) {
+                                  map[r][c] = TILE_FLOOR;
+                              }
+                          }
+                          roomCenters.add(new int[]{rr + rh / 2, rc + rw / 2});
+                      }
+
+                      // Connect room centers with wide corridors so player doesn't get trapped
+                      for (int i = 1; i < roomCenters.size(); i++) {
+                          int[] a = roomCenters.get(i - 1);
+                          int[] b = roomCenters.get(i);
+                          carveCorridor(a[0], a[1], b[0], b[1]);
+                      }
+                      // Extra loop corridors so the player can juke monsters
+                      for (int i = 0; i < roomCenters.size() / 2; i++) {
+                          int[] a = roomCenters.get(rng.nextInt(roomCenters.size()));
+                          int[] b = roomCenters.get(rng.nextInt(roomCenters.size()));
+                          carveCorridor(a[0], a[1], b[0], b[1]);
+                      }
+
+                      // Enforce solid perimeter walls
+                      for (int r = 0; r < MAP_ROWS; r++) {
+                          map[r][0] = TILE_WALL;
+                          map[r][MAP_COLS - 1] = TILE_WALL;
+                      }
+                      for (int c = 0; c < MAP_COLS; c++) {
+                          map[0][c] = TILE_WALL;
+                          map[MAP_ROWS - 1][c] = TILE_WALL;
+                      }
+
+                      // Build wall collision rectangles
+                      for (int r = 0; r < MAP_ROWS; r++) {
+                          for (int c = 0; c < MAP_COLS; c++) {
+                              if (map[r][c] == TILE_WALL) {
+                                  wallRects.add(new RectF(
+                                          c * TILE_SIZE,
+                                          r * TILE_SIZE,
+                                          (c + 1) * TILE_SIZE,
+                                          (r + 1) * TILE_SIZE
+                                  ));
+                              } else if (rng.nextFloat() < 0.08f) {
+                                  decals.add(new BloodDecal(
+                                          (c + 0.2f + rng.nextFloat() * 0.6f) * TILE_SIZE,
+                                          (r + 0.2f + rng.nextFloat() * 0.6f) * TILE_SIZE,
+                                          14f + rng.nextFloat() * 24f
+                                  ));
+                              }
+                          }
+                      }
+
+                      // Place Player in first room
+                      int[] startRoom = roomCenters.get(0);
+                      playerX = (startRoom[1] + 0.5f) * TILE_SIZE;
+                      playerY = (startRoom[0] + 0.5f) * TILE_SIZE;
+
+                      // Place Exit Elevator far from player
+                      int[] exitTile = findFarFloorTile(playerX, playerY, 900f);
+                      map[exitTile[0]][exitTile[1]] = TILE_EXIT_LOCKED;
+                      exitX = (exitTile[1] + 0.5f) * TILE_SIZE;
+                      exitY = (exitTile[0] + 0.5f) * TILE_SIZE;
+
+                      // Place Generators
+                      for (int i = 0; i < generatorsNeeded; i++) {
+                          int[] gt = findFarFloorTile(playerX, playerY, 450f);
+                          float gx = (gt[1] + 0.5f) * TILE_SIZE;
+                          float gy = (gt[0] + 0.5f) * TILE_SIZE;
+                          generators.add(new Generator(gx, gy));
+                      }
+
+                      // Place Batteries & Medkits
+                      int batteryCount = 5 + currentNight;
+                      for (int i = 0; i < batteryCount; i++) {
+                          int[] bt = findFarFloorTile(playerX, playerY, 200f);
+                          pickups.add(new Pickup((bt[1] + 0.5f) * TILE_SIZE, (bt[0] + 0.5f) * TILE_SIZE, Pickup.TYPE_BATTERY));
+                      }
+                      int medkitCount = 3;
+                      for (int i = 0; i < medkitCount; i++) {
+                          int[] mt = findFarFloorTile(playerX, playerY, 300f);
+                          pickups.add(new Pickup((mt[1] + 0.5f) * TILE_SIZE, (mt[0] + 0.5f) * TILE_SIZE, Pickup.TYPE_MEDKIT));
+                      }
+
+                      // Spawn Horror Monsters
+                      int monsterCount = 3 + currentNight;
+                      for (int i = 0; i < monsterCount; i++) {
+                          int[] mt = findFarFloorTile(playerX, playerY, 750f);
+                          int type = i % 3; // 0 = Stalker, 1 = Weeping Statue, 2 = Phantasm
+                          monsters.add(new Monster((mt[1] + 0.5f) * TILE_SIZE, (mt[0] + 0.5f) * TILE_SIZE, type, currentNight));
+                      }
+                  }
+
+                  private void carveCorridor(int r1, int c1, int r2, int c2) {
+                      int r = r1;
+                      int c = c1;
+                      while (c != c2) {
+                          map[r][c] = TILE_FLOOR;
+                          if (r + 1 < MAP_ROWS - 1) map[r + 1][c] = TILE_FLOOR;
+                          c += (c2 > c) ? 1 : -1;
+                      }
+                      while (r != r2) {
+                          map[r][c] = TILE_FLOOR;
+                          if (c + 1 < MAP_COLS - 1) map[r][c + 1] = TILE_FLOOR;
+                          r += (r2 > r) ? 1 : -1;
+                      }
+                  }
+
+                  private int[] findFarFloorTile(float fromX, float fromY, float minDist) {
+                      for (int attempt = 0; attempt < 250; attempt++) {
+                          int r = 2 + rng.nextInt(MAP_ROWS - 4);
+                          int c = 2 + rng.nextInt(MAP_COLS - 4);
+                          if (map[r][c] == TILE_FLOOR) {
+                              float tx = (c + 0.5f) * TILE_SIZE;
+                              float ty = (r + 0.5f) * TILE_SIZE;
+                              float dist = (float) Math.hypot(tx - fromX, ty - fromY);
+                              if (dist >= minDist || attempt > 200) {
+                                  return new int[]{r, c};
+                              }
+                          }
+                      }
+                      return new int[]{MAP_ROWS / 2, MAP_COLS / 2};
+                  }
+
+                  // =====================================================================
+                  // GAME UPDATE LOOP
+                  // =====================================================================
+                  private void updateGame(float dt) {
+                      if (statusBannerTimer > 0f) statusBannerTimer -= dt;
+                      if (radarCooldown > 0f) radarCooldown -= dt;
+                      if (radarActiveTimer > 0f) radarActiveTimer -= dt;
+                      if (screenShake > 0f) screenShake = Math.max(0f, screenShake - dt * 25f);
+                      if (jumpscareFlash > 0f) jumpscareFlash = Math.max(0f, jumpscareFlash - dt * 2.2f);
+
+                      // 1. Update Stamina & Player Movement
+                      float moveMag = (float) Math.hypot(moveInputX, moveInputY);
+                      boolean moving = moveMag > 0.12f;
+
+                      if (sprinting && moving && !staminaExhausted) {
+                          stamina -= dt * 28f;
+                          if (stamina <= 0f) {
+                              stamina = 0f;
+                              staminaExhausted = true;
+                              setBanner("EXHAUSTED! CATCH YOUR BREATH...", 2.0f);
+                          }
+                      } else {
+                          stamina = Math.min(100f, stamina + dt * 16f);
+                          if (stamina > 30f) staminaExhausted = false;
+                      }
+
+                      float baseSpeed = (sprinting && !staminaExhausted) ? 310f : 195f;
+                      float vx = moveInputX * baseSpeed;
+                      float vy = moveInputY * baseSpeed;
+
+                      moveEntityWithWallSliding(vx * dt, vy * dt);
+
+                      // Auto-aim along movement if right stick isn't actively held
+                      if (aimPointerId == -1 && moving) {
+                          float targetAngle = (float) Math.atan2(moveInputY, moveInputX);
+                          aimAngle = lerpAngle(aimAngle, targetAngle, dt * 8f);
+                      }
+
+                      // Emit footsteps noise ripples when sprinting
+                      if (moving && sprinting && !staminaExhausted && rng.nextFloat() < dt * 5f) {
+                          ripples.add(new SoundRipple(playerX, playerY, 420f));
+                          alertMonstersToNoise(playerX, playerY, 480f);
+                      }
+
+                      // 2. Update Flashlight Battery
+                      if (flashlightOn) {
+                          battery -= dt * (1.85f + currentNight * 0.15f);
+                          if (battery <= 0f) {
+                              battery = 0f;
+                              flashlightOn = false;
+                              soundSynth.playClick();
+                              setBanner("BATTERY DEPLETED! FIND GREEN BATTERY CELLS!", 3.0f);
+                          }
+                      } else {
+                          // Tiny passive trickle recovery up to 8% emergency reserve
+                          if (battery < 8f) battery += dt * 0.6f;
+                      }
+
+                      // 3. Update Generators (Repair when standing nearby)
+                      for (Generator gen : generators) {
+                          if (!gen.repaired) {
+                              float dist = (float) Math.hypot(playerX - gen.x, playerY - gen.y);
+                              if (dist < 85f) {
+                                  gen.progress += dt * 24f;
+                                  // Sparks & mechanical hum noise
+                                  if (rng.nextFloat() < dt * 8f) {
+                                      particles.add(new Particle(gen.x, gen.y, Color.rgb(255, 210, 60)));
+                                  }
+                                  if (rng.nextFloat() < dt * 2.2f) {
+                                      ripples.add(new SoundRipple(gen.x, gen.y, 550f));
+                                      alertMonstersToNoise(gen.x, gen.y, 600f);
+                                  }
+                                  if (gen.progress >= 100f) {
+                                      gen.progress = 100f;
+                                      gen.repaired = true;
+                                      generatorsDone++;
+                                      totalGeneratorsRepaired++;
+                                      soundSynth.playGeneratorChime();
+                                      vibrate(60);
+                                      if (generatorsDone >= generatorsNeeded) {
+                                          unlockExit();
+                                      } else {
+                                          setBanner("GENERATOR REPAIRED (" + generatorsDone + "/" + generatorsNeeded + ")", 2.5f);
+                                      }
+                                  }
+                              }
+                          }
+                      }
+
+                      // 4. Check Pickups
+                      Iterator<Pickup> pit = pickups.iterator();
+                      while (pit.hasNext()) {
+                          Pickup p = pit.next();
+                          if (Math.hypot(playerX - p.x, playerY - p.y) < 48f) {
+                              if (p.type == Pickup.TYPE_BATTERY) {
+                                  battery = Math.min(100f, battery + 45f);
+                                  setBanner("+45% FLASHLIGHT BATTERY", 2.0f);
+                              } else {
+                                  health = Math.min(100f, health + 40f);
+                                  stamina = 100f;
+                                  setBanner("+40 HEALTH & ADRENALINE BOOST", 2.0f);
+                              }
+                              soundSynth.playPickup();
+                              vibrate(30);
+                              pit.remove();
+                          }
+                      }
+
+                      // 5. Check Unlocked Exit
+                      if (generatorsDone >= generatorsNeeded) {
+                          if (Math.hypot(playerX - exitX, playerY - exitY) < 62f) {
+                              soundSynth.playGeneratorChime();
+                              vibrate(120);
+                              if (currentNight >= bestNight) {
+                                  bestNight = currentNight + 1;
+                                  prefs.edit().putInt("best_night", bestNight).apply();
+                              }
+                              gameState = STATE_NIGHT_CLEARED;
+                              return;
+                          }
+                      }
+
+                      // 6. Update Monsters & Terror Level
+                      float closestMonsterDist = 9999f;
+                      for (Monster m : monsters) {
+                          float dist = (float) Math.hypot(playerX - m.x, playerY - m.y);
+                          if (dist < closestMonsterDist) closestMonsterDist = dist;
+
+                          boolean inBeam = isPointInFlashlightCone(m.x, m.y) && hasLineOfSight(playerX, playerY, m.x, m.y);
+                          m.frozenByBeam = false;
+
+                          if (m.type == Monster.TYPE_STATUE) {
+                              // Weeping Statue freezes completely when watched in flashlight beam!
+                              if (inBeam) {
+                                  m.frozenByBeam = true;
+                              } else if (dist < 780f) {
+                                  m.targetX = playerX;
+                                  m.targetY = playerY;
+                                  m.chasing = true;
+                                  moveMonster(m, dt, m.chaseSpeed * 1.25f, false);
+                              }
+                          } else if (m.type == Monster.TYPE_PHANTASM) {
+                              // Spectral Wraith phases slowly through walls and drains battery when close
+                              m.targetX = playerX;
+                              m.targetY = playerY;
+                              moveMonster(m, dt, m.patrolSpeed, true);
+                              if (dist < 220f && flashlightOn) {
+                                  battery = Math.max(0f, battery - dt * 4.5f);
+                              }
+                          } else {
+                              // The Stalker: Hunts by sight (worse when your flashlight is ON) and sound
+                              float sightRange = flashlightOn ? 520f : 185f;
+                              if (dist < sightRange && hasLineOfSight(m.x, m.y, playerX, playerY)) {
+                                  m.targetX = playerX;
+                                  m.targetY = playerY;
+                                  m.alertTimer = 5.0f;
+                                  m.chasing = true;
+                              } else if (m.alertTimer > 0f) {
+                                  m.alertTimer -= dt;
+                                  m.chasing = true;
+                              } else {
+                                  m.chasing = false;
+                                  if (Math.hypot(m.targetX - m.x, m.targetY - m.y) < 40f || m.stuckTimer > 1.2f) {
+                                      int[] pt = findFarFloorTile(m.x, m.y, 200f);
+                                      m.targetX = (pt[1] + 0.5f) * TILE_SIZE;
+                                      m.targetY = (pt[0] + 0.5f) * TILE_SIZE;
+                                      m.stuckTimer = 0f;
+                                  }
+                              }
+                              float spd = m.chasing ? m.chaseSpeed : m.patrolSpeed;
+                              moveMonster(m, dt, spd, false);
+                          }
+
+                          // Monster Attack Check
+                          if (dist < playerRadius + m.radius && m.attackCooldown <= 0f && !m.frozenByBeam) {
+                              health -= (22f + currentNight * 3f);
+                              m.attackCooldown = 1.35f;
+                              screenShake = 18f;
+                              jumpscareFlash = 1.0f;
+                              soundSynth.playJumpscareShriek();
+                              vibrate(250);
+                              for (int k = 0; k < 14; k++) {
+                                  particles.add(new Particle(playerX, playerY, Color.rgb(220, 20, 30)));
+                              }
+                              if (health <= 0f) {
+                                  health = 0f;
+                                  gameState = STATE_GAME_OVER;
+                                  return;
+                              }
+                          }
+                          if (m.attackCooldown > 0f) m.attackCooldown -= dt;
+                      }
+
+                      // Proximity Heartbeat & Terror Vignette
+                      dangerLevel = Math.max(0f, Math.min(1f, 1f - (closestMonsterDist - 120f) / 520f));
+                      soundSynth.setDangerIntensity(dangerLevel);
+                      if (dangerLevel > 0.15f) {
+                          heartbeatTimer -= dt * (1.2f + dangerLevel * 2.4f);
+                          if (heartbeatTimer <= 0f) {
+                              heartbeatTimer = 1.0f;
+                              soundSynth.playHeartbeat();
+                              if (dangerLevel > 0.65f) vibrate(25);
+                          }
+                      }
+
+                      // 7. Update Particles & Ripples
+                      Iterator<Particle> partIt = particles.iterator();
+                      while (partIt.hasNext()) {
+                          Particle pt = partIt.next();
+                          pt.x += pt.vx * dt;
+                          pt.y += pt.vy * dt;
+                          pt.life -= dt;
+                          if (pt.life <= 0f) partIt.remove();
+                      }
+
+                      Iterator<SoundRipple> ripIt = ripples.iterator();
+                      while (ripIt.hasNext()) {
+                          SoundRipple sr = ripIt.next();
+                          sr.radius += dt * 360f;
+                          if (sr.radius >= sr.maxRadius) ripIt.remove();
+                      }
+                  }
+
+                  private void unlockExit() {
+                      for (int r = 0; r < MAP_ROWS; r++) {
+                          for (int c = 0; c < MAP_COLS; c++) {
+                              if (map[r][c] == TILE_EXIT_LOCKED) {
+                                  map[r][c] = TILE_EXIT_OPEN;
+                              }
+                          }
+                      }
+                      setBanner("ALL GENERATORS ONLINE! ESCAPE TO THE GREEN EXIT ELEVATOR!", 5.0f);
+                      alertMonstersToNoise(exitX, exitY, 900f);
+                  }
+
+                  private void alertMonstersToNoise(float nx, float ny, float radius) {
+                      for (Monster m : monsters) {
+                          if (m.type == Monster.TYPE_STALKER) {
+                              if (Math.hypot(m.x - nx, m.y - ny) <= radius) {
+                                  m.targetX = nx;
+                                  m.targetY = ny;
+                                  m.alertTimer = 4.5f;
+                              }
+                          }
+                      }
+                  }
+
+                  private void moveEntityWithWallSliding(float dx, float dy) {
+                      playerX += dx;
+                      resolveWallCollisionForPlayer(true, dx);
+                      playerY += dy;
+                      resolveWallCollisionForPlayer(false, dy);
+                  }
+
+                  private void resolveWallCollisionForPlayer(boolean horizontal, float delta) {
+                      for (RectF w : wallRects) {
+                          if (circleIntersectsRect(playerX, playerY, playerRadius, w)) {
+                              if (horizontal) {
+                                  if (delta > 0) playerX = w.left - playerRadius - 0.1f;
+                                  else if (delta < 0) playerX = w.right + playerRadius + 0.1f;
+                              } else {
+                                  if (delta > 0) playerY = w.top - playerRadius - 0.1f;
+                                  else if (delta < 0) playerY = w.bottom + playerRadius + 0.1f;
+                              }
+                          }
+                      }
+                  }
+
+                  private void moveMonster(Monster m, float dt, float speed, boolean ignoreWalls) {
+                      float dx = m.targetX - m.x;
+                      float dy = m.targetY - m.y;
+                      float dist = (float) Math.hypot(dx, dy);
+                      if (dist < 2f) return;
+
+                      float vx = (dx / dist) * speed * dt;
+                      float vy = (dy / dist) * speed * dt;
+                      float oldX = m.x;
+                      float oldY = m.y;
+
+                      m.x += vx;
+                      if (!ignoreWalls) {
+                          for (RectF w : wallRects) {
+                              if (circleIntersectsRect(m.x, m.y, m.radius, w)) {
+                                  m.x = oldX;
+                                  break;
+                              }
+                          }
+                      }
+                      m.y += vy;
+                      if (!ignoreWalls) {
+                          for (RectF w : wallRects) {
+                              if (circleIntersectsRect(m.x, m.y, m.radius, w)) {
+                                  m.y = oldY;
+                                  break;
+                              }
+                          }
+                      }
+                      if (Math.hypot(m.x - oldX, m.y - oldY) < speed * dt * 0.2f) {
+                          m.stuckTimer += dt;
+                      } else {
+                          m.stuckTimer = 0f;
+                      }
+                  }
+
+                  private boolean circleIntersectsRect(float cx, float cy, float r, RectF rect) {
+                      float closestX = Math.max(rect.left, Math.min(cx, rect.right));
+                      float closestY = Math.max(rect.top, Math.min(cy, rect.bottom));
+                      float dx = cx - closestX;
+                      float dy = cy - closestY;
+                      return (dx * dx + dy * dy) < (r * r);
+                  }
+
+                  // =====================================================================
+                  // RAYCAST FLASHLIGHT & LINE OF SIGHT
+                  // =====================================================================
+                  private boolean isPointInFlashlightCone(float px, float py) {
+                      if (!flashlightOn || battery <= 0f) return false;
+                      float dx = px - playerX;
+                      float dy = py - playerY;
+                      float dist = (float) Math.hypot(dx, dy);
+                      if (dist > 560f) return false;
+                      float angleToPoint = (float) Math.atan2(dy, dx);
+                      float diff = Math.abs(normalizeAngle(angleToPoint - aimAngle));
+                      return diff <= Math.toRadians(34);
+                  }
+
+                  private boolean hasLineOfSight(float x1, float y1, float x2, float y2) {
+                      float dist = (float) Math.hypot(x2 - x1, y2 - y1);
+                      int steps = Math.max(2, (int) (dist / (TILE_SIZE * 0.4f)));
+                      for (int i = 1; i < steps; i++) {
+                          float t = i / (float) steps;
+                          float sx = x1 + (x2 - x1) * t;
+                          float sy = y1 + (y2 - y1) * t;
+                          int c = (int) (sx / TILE_SIZE);
+                          int r = (int) (sy / TILE_SIZE);
+                          if (r >= 0 && r < MAP_ROWS && c >= 0 && c < MAP_COLS) {
+                              if (map[r][c] == TILE_WALL) return false;
+                          }
+                      }
+                      return true;
+                  }
+
+                  private float castRay(float originX, float originY, float angle, float maxDist) {
+                      float cos = (float) Math.cos(angle);
+                      float sin = (float) Math.sin(angle);
+                      float step = 12f;
+                      for (float d = step; d <= maxDist; d += step) {
+                          float rx = originX + cos * d;
+                          float ry = originY + sin * d;
+                          int c = (int) (rx / TILE_SIZE);
+                          int r = (int) (ry / TILE_SIZE);
+                          if (r < 0 || r >= MAP_ROWS || c < 0 || c >= MAP_COLS || map[r][c] == TILE_WALL) {
+                              return d;
+                          }
+                      }
+                      return maxDist;
+                  }
+
+                  // =====================================================================
+                  // RENDERING (OPTIMIZED FOR SAMSUNG GALAXY A17 5G SUPER AMOLED)
+                  // =====================================================================
+                  private void renderGame(Canvas canvas, float dt) {
+                      int sw = canvas.getWidth();
+                      int sh = canvas.getHeight();
+
+                      // Pure AMOLED black background
+                      canvas.drawColor(Color.BLACK);
+
+                      if (gameState == STATE_MENU) {
+                          renderMenu(canvas, sw, sh);
+                          return;
+                      }
+
+                      // Camera Transform centered on Player with optional terror shake
+                      float shakeX = (screenShake > 0f) ? (rng.nextFloat() - 0.5f) * screenShake : 0f;
+                      float shakeY = (screenShake > 0f) ? (rng.nextFloat() - 0.5f) * screenShake : 0f;
+                      float camX = playerX - sw / 2f + shakeX;
+                      float camY = playerY - sh / 2f + shakeY;
+
+                      canvas.save();
+                      canvas.translate(-camX, -camY);
+
+                      // 1. Draw Visible Map Tiles
+                      int minC = Math.max(0, (int) (camX / TILE_SIZE) - 1);
+                      int maxC = Math.min(MAP_COLS - 1, (int) ((camX + sw) / TILE_SIZE) + 1);
+                      int minR = Math.max(0, (int) (camY / TILE_SIZE) - 1);
+                      int maxR = Math.min(MAP_ROWS - 1, (int) ((camY + sh) / TILE_SIZE) + 1);
+
+                      for (int r = minR; r <= maxR; r++) {
+                          for (int c = minC; c <= maxC; c++) {
+                              float left = c * TILE_SIZE;
+                              float top = r * TILE_SIZE;
+                              int tile = map[r][c];
+                              if (tile == TILE_WALL) {
+                                  paint.setStyle(Paint.Style.FILL);
+                                  paint.setColor(Color.rgb(24, 28, 34));
+                                  canvas.drawRect(left, top, left + TILE_SIZE, top + TILE_SIZE, paint);
+                                  paint.setStyle(Paint.Style.STROKE);
+                                  paint.setStrokeWidth(3f);
+                                  paint.setColor(Color.rgb(45, 52, 64));
+                                  canvas.drawRect(left + 1.5f, top + 1.5f, left + TILE_SIZE - 1.5f, top + TILE_SIZE - 1.5f, paint);
+                              } else {
+                                  paint.setStyle(Paint.Style.FILL);
+                                  paint.setColor(((r + c) % 2 == 0) ? Color.rgb(16, 18, 22) : Color.rgb(13, 15, 19));
+                                  canvas.drawRect(left, top, left + TILE_SIZE, top + TILE_SIZE, paint);
+
+                                  if (tile == TILE_EXIT_LOCKED || tile == TILE_EXIT_OPEN) {
+                                      paint.setColor(tile == TILE_EXIT_OPEN ? Color.rgb(25, 190, 95) : Color.rgb(150, 35, 35));
+                                      canvas.drawRect(left + 10f, top + 10f, left + TILE_SIZE - 10f, top + TILE_SIZE - 10f, paint);
+                                      paint.setColor(Color.WHITE);
+                                      paint.setTextSize(22f);
+                                      paint.setTextAlign(Paint.Align.CENTER);
+                                      canvas.drawText(tile == TILE_EXIT_OPEN ? "EXIT OPEN" : "LOCKED", left + TILE_SIZE / 2f, top + TILE_SIZE / 2f + 8f, paint);
+                                  }
+                              }
+                          }
+                      }
+
+                      // 2. Draw Blood Decals
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(Color.argb(120, 110, 10, 15));
+                      for (BloodDecal bd : decals) {
+                          canvas.drawCircle(bd.x, bd.y, bd.radius, paint);
+                      }
+
+                      // 3. Draw Sound Ripples
+                      paint.setStyle(Paint.Style.STROKE);
+                      paint.setStrokeWidth(2.5f);
+                      for (SoundRipple sr : ripples) {
+                          int alpha = (int) (160 * (1f - sr.radius / sr.maxRadius));
+                          paint.setColor(Color.argb(Math.max(0, alpha), 120, 200, 255));
+                          canvas.drawCircle(sr.x, sr.y, sr.radius, paint);
+                      }
+
+                      // 4. Draw Generators
+                      for (Generator gen : generators) {
+                          paint.setStyle(Paint.Style.FILL);
+                          paint.setColor(gen.repaired ? Color.rgb(40, 195, 100) : Color.rgb(190, 130, 30));
+                          canvas.drawRoundRect(new RectF(gen.x - 28f, gen.y - 28f, gen.x + 28f, gen.y + 28f), 8f, 8f, paint);
+
+                          // Progress ring
+                          paint.setStyle(Paint.Style.STROKE);
+                          paint.setStrokeWidth(6f);
+                          paint.setColor(gen.repaired ? Color.rgb(100, 255, 160) : Color.rgb(255, 215, 60));
+                          RectF arcRect = new RectF(gen.x - 38f, gen.y - 38f, gen.x + 38f, gen.y + 38f);
+                          canvas.drawArc(arcRect, -90f, (gen.progress / 100f) * 360f, false, paint);
+                      }
+
+                      // 5. Draw Pickups
+                      for (Pickup p : pickups) {
+                          paint.setStyle(Paint.Style.FILL);
+                          if (p.type == Pickup.TYPE_BATTERY) {
+                              paint.setColor(Color.rgb(50, 235, 180));
+                              canvas.drawRect(p.x - 12f, p.y - 16f, p.x + 12f, p.y + 16f, paint);
+                          } else {
+                              paint.setColor(Color.rgb(235, 65, 75));
+                              canvas.drawCircle(p.x, p.y, 16f, paint);
+                              paint.setColor(Color.WHITE);
+                              canvas.drawRect(p.x - 4f, p.y - 10f, p.x + 4f, p.y + 10f, paint);
+                              canvas.drawRect(p.x - 10f, p.y - 4f, p.x + 10f, p.y + 4f, paint);
+                          }
+                      }
+
+                      // 6. Draw Monsters
+                      for (Monster m : monsters) {
+                          paint.setStyle(Paint.Style.FILL);
+                          if (m.type == Monster.TYPE_STATUE) {
+                              paint.setColor(m.frozenByBeam ? Color.rgb(145, 150, 160) : Color.rgb(200, 190, 175));
+                              canvas.drawCircle(m.x, m.y, m.radius, paint);
+                          } else if (m.type == Monster.TYPE_PHANTASM) {
+                              paint.setColor(Color.argb(170, 95, 180, 255));
+                              canvas.drawCircle(m.x, m.y, m.radius + 4f, paint);
+                          } else {
+                              paint.setColor(Color.rgb(25, 10, 15));
+                              canvas.drawCircle(m.x, m.y, m.radius, paint);
+                          }
+                          // Glowing Monster Eyes
+                          float angToPlayer = (float) Math.atan2(playerY - m.y, playerX - m.x);
+                          float ex1 = m.x + (float) Math.cos(angToPlayer - 0.35f) * 14f;
+                          float ey1 = m.y + (float) Math.sin(angToPlayer - 0.35f) * 14f;
+                          float ex2 = m.x + (float) Math.cos(angToPlayer + 0.35f) * 14f;
+                          float ey2 = m.y + (float) Math.sin(angToPlayer + 0.35f) * 14f;
+                          paint.setColor(m.type == Monster.TYPE_PHANTASM ? Color.CYAN : Color.rgb(255, 30, 30));
+                          canvas.drawCircle(ex1, ey1, 5.5f, paint);
+                          canvas.drawCircle(ex2, ey2, 5.5f, paint);
+                      }
+
+                      // 7. Draw Player Survivor
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(Color.rgb(70, 150, 235));
+                      canvas.drawCircle(playerX, playerY, playerRadius, paint);
+                      // Flashlight barrel indicator
+                      paint.setStrokeWidth(7f);
+                      paint.setColor(Color.rgb(220, 230, 245));
+                      canvas.drawLine(
+                              playerX,
+                              playerY,
+                              playerX + (float) Math.cos(aimAngle) * (playerRadius + 14f),
+                              playerY + (float) Math.sin(aimAngle) * (playerRadius + 14f),
+                              paint
+                      );
+
+                      // 8. Draw Particles
+                      paint.setStyle(Paint.Style.FILL);
+                      for (Particle pt : particles) {
+                          paint.setColor(pt.color);
+                          canvas.drawCircle(pt.x, pt.y, 4.5f, paint);
+                      }
+
+                      // 9. Pitch-Black Darkness & Raycast Flashlight Cone Layer
+                      int layerId = canvas.saveLayer(camX, camY, camX + sw, camY + sh, null);
+                      darknessPaint.setStyle(Paint.Style.FILL);
+                      darknessPaint.setColor(Color.argb(248, 2, 3, 6));
+                      canvas.drawRect(camX, camY, camX + sw, camY + sh, darknessPaint);
+
+                      // Soft close-range ambient survival aura around player
+                      float auraRadius = flashlightOn ? 140f : 90f;
+                      lightClearPaint.setShader(new RadialGradient(
+                              playerX, playerY, auraRadius,
+                              new int[]{Color.argb(255, 0, 0, 0), Color.argb(0, 0, 0, 0)},
+                              new float[]{0.2f, 1.0f},
+                              Shader.TileMode.CLAMP
+                      ));
+                      canvas.drawCircle(playerX, playerY, auraRadius, lightClearPaint);
+
+                      // Raycast Directional Flashlight Beam
+                      boolean flickerOff = (battery < 22f && rng.nextFloat() < 0.18f) || (dangerLevel > 0.75f && rng.nextFloat() < 0.10f);
+                      if (flashlightOn && battery > 0f && !flickerOff) {
+                          float beamRange = 540f;
+                          float halfSpread = (float) Math.toRadians(34);
+                          int rays = 36;
+                          lightPolyPath.reset();
+                          lightPolyPath.moveTo(playerX, playerY);
+                          for (int i = 0; i <= rays; i++) {
+                              float rayAng = (aimAngle - halfSpread) + (2f * halfSpread * i / rays);
+                              float d = castRay(playerX, playerY, rayAng, beamRange);
+                              float rx = playerX + (float) Math.cos(rayAng) * d;
+                              float ry = playerY + (float) Math.sin(rayAng) * d;
+                              lightPolyPath.lineTo(rx, ry);
+                          }
+                          lightPolyPath.close();
+
+                          lightClearPaint.setShader(new RadialGradient(
+                                  playerX, playerY, beamRange,
+                                  new int[]{Color.argb(255, 0, 0, 0), Color.argb(210, 0, 0, 0), Color.argb(0, 0, 0, 0)},
+                                  new float[]{0f, 0.7f, 1f},
+                                  Shader.TileMode.CLAMP
+                          ));
+                          canvas.drawPath(lightPolyPath, lightClearPaint);
+                      }
+                      canvas.restoreToCount(layerId);
+
+                      // Warm volumetric tint inside flashlight beam
+                      if (flashlightOn && battery > 0f && !flickerOff) {
+                          coneGlowPaint.setStyle(Paint.Style.FILL);
+                          coneGlowPaint.setColor(Color.argb(26, 255, 245, 195));
+                          canvas.drawPath(lightPolyPath, coneGlowPaint);
+                      }
+
+                      // 10. Draw Acoustic Radar Pings (shows objective directions through darkness when triggered)
+                      if (radarActiveTimer > 0f) {
+                          paint.setStyle(Paint.Style.STROKE);
+                          paint.setStrokeWidth(4f);
+                          for (Generator gen : generators) {
+                              if (!gen.repaired) {
+                                  paint.setColor(Color.argb(210, 255, 215, 50));
+                                  canvas.drawCircle(gen.x, gen.y, 45f + (2.5f - radarActiveTimer) * 25f, paint);
+                                  drawDirectionIndicator(canvas, gen.x, gen.y, Color.rgb(255, 215, 50));
+                              }
+                          }
+                          if (generatorsDone >= generatorsNeeded) {
+                              paint.setColor(Color.argb(230, 50, 255, 120));
+                              canvas.drawCircle(exitX, exitY, 55f, paint);
+                              drawDirectionIndicator(canvas, exitX, exitY, Color.rgb(50, 255, 120));
+                          }
+                      }
+
+                      // Always show glowing red monster eyes slightly through darkness when dangerously close
+                      for (Monster m : monsters) {
+                          float dist = (float) Math.hypot(playerX - m.x, playerY - m.y);
+                          if (dist < 310f && hasLineOfSight(playerX, playerY, m.x, m.y)) {
+                              paint.setStyle(Paint.Style.FILL);
+                              paint.setColor(Color.argb(190, 255, 25, 25));
+                              canvas.drawCircle(m.x, m.y, 5f, paint);
+                          }
+                      }
+
+                      canvas.restore();
+
+                      // =================================================================
+                      // SCREEN-SPACE HUD & DUAL VIRTUAL JOYSTICKS
+                      // =================================================================
+                      renderHUD(canvas, sw, sh);
+                  }
+
+                  private void drawDirectionIndicator(Canvas canvas, float targetX, float targetY, int color) {
+                      float ang = (float) Math.atan2(targetY - playerY, targetX - playerX);
+                      float ix = playerX + (float) Math.cos(ang) * 95f;
+                      float iy = playerY + (float) Math.sin(ang) * 95f;
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(color);
+                      canvas.drawCircle(ix, iy, 9f, paint);
+                  }
+
+                  private void renderHUD(Canvas canvas, int sw, int sh) {
+                      // Terror Red Vignette Border
+                      if (dangerLevel > 0.05f || jumpscareFlash > 0f) {
+                          int redAlpha = (int) Math.min(210, dangerLevel * 120 + jumpscareFlash * 170);
+                          paint.setStyle(Paint.Style.STROKE);
+                          paint.setStrokeWidth(42f);
+                          paint.setColor(Color.argb(redAlpha, 195, 10, 20));
+                          canvas.drawRect(0, 0, sw, sh, paint);
+                      }
+
+                      // Top Left Status Bars (Health, Stamina, Battery)
+                      drawMeter(canvas, 40f, 34f, 240f, 22f, health / 100f, Color.rgb(220, 45, 55), "HP");
+                      drawMeter(canvas, 40f, 68f, 240f, 22f, stamina / 100f, Color.rgb(65, 175, 255), "STM");
+                      drawMeter(canvas, 40f, 102f, 240f, 22f, battery / 100f, Color.rgb(60, 235, 145), "BAT");
+
+                      // Top Right Objective Counter
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(Color.WHITE);
+                      paint.setTextSize(30f);
+                      paint.setTextAlign(Paint.Align.RIGHT);
+                      canvas.drawText("NIGHT " + currentNight + "  |  GENERATORS: " + generatorsDone + "/" + generatorsNeeded, sw - 40f, 62f, paint);
+
+                      if (statusBannerTimer > 0f) {
+                          paint.setTextAlign(Paint.Align.CENTER);
+                          paint.setTextSize(28f);
+                          paint.setColor(Color.rgb(255, 220, 110));
+                          canvas.drawText(statusBanner, sw / 2f, 115f, paint);
+                      }
+
+                      // Left Virtual Joystick (Movement)
+                      float leftBaseX = (movePointerId != -1) ? moveOriginX : 210f;
+                      float leftBaseY = (movePointerId != -1) ? moveOriginY : sh - 200f;
+                      float leftKnobX = (movePointerId != -1) ? moveCurrX : leftBaseX;
+                      float leftKnobY = (movePointerId != -1) ? moveCurrY : leftBaseY;
+                      drawJoystick(canvas, leftBaseX, leftBaseY, leftKnobX, leftKnobY, "MOVE");
+
+                      // Right Virtual Joystick (Flashlight 360 Aim)
+                      float rightBaseX = (aimPointerId != -1) ? aimOriginX : sw - 230f;
+                      float rightBaseY = (aimPointerId != -1) ? aimOriginY : sh - 200f;
+                      float rightKnobX = (aimPointerId != -1) ? aimCurrX : rightBaseX + (float) Math.cos(aimAngle) * 45f;
+                      float rightKnobY = (aimPointerId != -1) ? aimCurrY : rightBaseY + (float) Math.sin(aimAngle) * 45f;
+                      drawJoystick(canvas, rightBaseX, rightBaseY, rightKnobX, rightKnobY, "AIM LIGHT");
+
+                      // Action Buttons (Flashlight Toggle, Sprint Hold, Sonar Radar Ping)
+                      drawButton(canvas, btnFlashlight, flashlightOn ? "LIGHT: ON" : "LIGHT: OFF",
+                              flashlightOn ? Color.argb(170, 230, 185, 45) : Color.argb(150, 55, 65, 80));
+                      drawButton(canvas, btnSprint, sprinting ? "SPRINTING" : "HOLD SPRINT",
+                              sprinting ? Color.argb(180, 45, 155, 235) : Color.argb(150, 45, 85, 130));
+                      String radarLabel = (radarCooldown > 0f) ? "PING (" + (int) Math.ceil(radarCooldown) + "s)" : "SONAR PING";
+                      drawButton(canvas, btnRadarPing, radarLabel,
+                              (radarCooldown <= 0f) ? Color.argb(165, 45, 185, 115) : Color.argb(120, 50, 55, 65));
+
+                      // Overlays for Night Cleared or Game Over
+                      if (gameState == STATE_NIGHT_CLEARED || gameState == STATE_GAME_OVER) {
+                          paint.setStyle(Paint.Style.FILL);
+                          paint.setColor(Color.argb(215, 5, 6, 10));
+                          canvas.drawRect(0, 0, sw, sh, paint);
+
+                          paint.setTextAlign(Paint.Align.CENTER);
+                          paint.setTextSize(64f);
+                          if (gameState == STATE_NIGHT_CLEARED) {
+                              paint.setColor(Color.rgb(65, 240, 130));
+                              canvas.drawText("NIGHT " + currentNight + " SURVIVED", sw / 2f, sh / 2f - 50f, paint);
+                              paint.setTextSize(32f);
+                              paint.setColor(Color.WHITE);
+                              canvas.drawText("TAP ANYWHERE TO DESCEND TO NIGHT " + (currentNight + 1), sw / 2f, sh / 2f + 35f, paint);
+                          } else {
+                              paint.setColor(Color.rgb(235, 35, 45));
+                              canvas.drawText("YOU WERE CONSUMED BY THE DARK", sw / 2f, sh / 2f - 55f, paint);
+                              paint.setTextSize(32f);
+                              paint.setColor(Color.WHITE);
+                              canvas.drawText("Reached Night " + currentNight + "  |  Best Night: " + bestNight + "  |  Generators: " + totalGeneratorsRepaired, sw / 2f, sh / 2f + 15f, paint);
+                              paint.setColor(Color.rgb(255, 210, 90));
+                              canvas.drawText("TAP ANYWHERE TO TRY AGAIN", sw / 2f, sh / 2f + 80f, paint);
+                          }
+                      }
+                  }
+
+                  private void renderMenu(Canvas canvas, int sw, int sh) {
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setTextAlign(Paint.Align.CENTER);
+
+                      paint.setColor(Color.rgb(225, 30, 40));
+                      paint.setTextSize(78f);
+                      canvas.drawText("SHADOW WARD", sw / 2f, sh * 0.28f, paint);
+
+                      paint.setColor(Color.rgb(190, 200, 215));
+                      paint.setTextSize(30f);
+                      canvas.drawText("2D TOP-DOWN SURVIVAL HORROR  •  GALAXY A17 5G EDITION", sw / 2f, sh * 0.37f, paint);
+
+                      paint.setColor(Color.rgb(150, 165, 180));
+                      paint.setTextSize(25f);
+                      canvas.drawText("• Repair all noisy generators in the dark asylum to unlock the Exit Elevator.", sw / 2f, sh * 0.50f, paint);
+                      canvas.drawText("• Shine your beam on Weeping Statues to freeze them; turn your light OFF to hide from Stalkers.", sw / 2f, sh * 0.57f, paint);
+                      canvas.drawText("• Use SONAR PING if you lose your way in the pitch-black corridors.", sw / 2f, sh * 0.64f, paint);
+
+                      paint.setColor(Color.rgb(255, 215, 80));
+                      paint.setTextSize(36f);
+                      canvas.drawText("[ TAP ANYWHERE TO ENTER NIGHT 1  (BEST NIGHT: " + bestNight + ") ]", sw / 2f, sh * 0.81f, paint);
+                  }
+
+                  private void drawMeter(Canvas canvas, float x, float y, float w, float h, float pct, int color, String label) {
+                      pct = Math.max(0f, Math.min(1f, pct));
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(Color.argb(180, 25, 30, 38));
+                      canvas.drawRoundRect(new RectF(x, y, x + w, y + h), 6f, 6f, paint);
+                      paint.setColor(color);
+                      canvas.drawRoundRect(new RectF(x, y, x + w * pct, y + h), 6f, 6f, paint);
+                      paint.setColor(Color.WHITE);
+                      paint.setTextSize(18f);
+                      paint.setTextAlign(Paint.Align.LEFT);
+                      canvas.drawText(label + " " + (int) (pct * 100) + "%", x + 10f, y + h - 5f, paint);
+                  }
+
+                  private void drawJoystick(Canvas canvas, float bx, float by, float kx, float ky, String label) {
+                      paint.setStyle(Paint.Style.STROKE);
+                      paint.setStrokeWidth(4f);
+                      paint.setColor(Color.argb(110, 200, 215, 235));
+                      canvas.drawCircle(bx, by, 95f, paint);
+
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(Color.argb(145, 220, 235, 255));
+                      canvas.drawCircle(kx, ky, 42f, paint);
+
+                      paint.setColor(Color.argb(160, 255, 255, 255));
+                      paint.setTextSize(20f);
+                      paint.setTextAlign(Paint.Align.CENTER);
+                      canvas.drawText(label, bx, by + 128f, paint);
+                  }
+
+                  private void drawButton(Canvas canvas, RectF rect, String text, int bgColor) {
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(bgColor);
+                      canvas.drawRoundRect(rect, 18f, 18f, paint);
+                      paint.setStyle(Paint.Style.STROKE);
+                      paint.setStrokeWidth(3f);
+                      paint.setColor(Color.argb(180, 230, 240, 255));
+                      canvas.drawRoundRect(rect, 18f, 18f, paint);
+
+                      paint.setStyle(Paint.Style.FILL);
+                      paint.setColor(Color.WHITE);
+                      paint.setTextSize(22f);
+                      paint.setTextAlign(Paint.Align.CENTER);
+                      canvas.drawText(text, rect.centerX(), rect.centerY() + 8f, paint);
+                  }
+
+                  private void updateUIButtonBounds(int sw, int sh) {
+                      btnFlashlight.set(sw - 470f, sh - 155f, sw - 340f, sh - 65f);
+                      btnSprint.set(sw - 470f, sh - 265f, sw - 340f, sh - 175f);
+                      btnRadarPing.set(sw - 470f, sh - 375f, sw - 340f, sh - 285f);
+                  }
+
+                  // =====================================================================
+                  // MULTI-TOUCH INPUT HANDLING
+                  // =====================================================================
+                  @Override
+                  public boolean onTouchEvent(MotionEvent event) {
+                      int action = event.getActionMasked();
+                      int index = event.getActionIndex();
+                      int pointerId = event.getPointerId(index);
+                      float tx = event.getX(index);
+                      float ty = event.getY(index);
+
+                      if (gameState != STATE_PLAYING) {
+                          if (action == MotionEvent.ACTION_DOWN) {
+                              if (gameState == STATE_NIGHT_CLEARED) {
+                                  startNewGame(currentNight + 1);
+                              } else {
+                                  startNewGame(1);
+                              }
+                          }
+                          return true;
+                      }
+
+                      switch (action) {
+                          case MotionEvent.ACTION_DOWN:
+                          case MotionEvent.ACTION_POINTER_DOWN:
+                              if (btnFlashlight.contains(tx, ty)) {
+                                  if (battery > 0f) {
+                                      flashlightOn = !flashlightOn;
+                                      soundSynth.playClick();
+                                      vibrate(20);
+                                  }
+                              } else if (btnSprint.contains(tx, ty)) {
+                                  sprintPointerId = pointerId;
+                                  sprinting = true;
+                              } else if (btnRadarPing.contains(tx, ty)) {
+                                  if (radarCooldown <= 0f) {
+                                      radarActiveTimer = 2.5f;
+                                      radarCooldown = 9.0f;
+                                      ripples.add(new SoundRipple(playerX, playerY, 650f));
+                                      alertMonstersToNoise(playerX, playerY, 650f);
+                                      soundSynth.playGeneratorChime();
+                                      setBanner("SONAR PING ACTIVE — BEWARE: MONSTERS HEARD THE PULSE!", 3.0f);
+                                  }
+                              } else if (tx < getWidth() * 0.45f && movePointerId == -1) {
+                                  movePointerId = pointerId;
+                                  moveOriginX = tx;
+                                  moveOriginY = ty;
+                                  moveCurrX = tx;
+                                  moveCurrY = ty;
+                              } else if (tx >= getWidth() * 0.45f && aimPointerId == -1) {
+                                  aimPointerId = pointerId;
+                                  aimOriginX = tx;
+                                  aimOriginY = ty;
+                                  aimCurrX = tx;
+                                  aimCurrY = ty;
+                              }
+                              break;
+
+                          case MotionEvent.ACTION_MOVE:
+                              for (int i = 0; i < event.getPointerCount(); i++) {
+                                  int pid = event.getPointerId(i);
+                                  float px = event.getX(i);
+                                  float py = event.getY(i);
+                                  if (pid == movePointerId) {
+                                      float dx = px - moveOriginX;
+                                      float dy = py - moveOriginY;
+                                      float dist = (float) Math.hypot(dx, dy);
+                                      float maxR = 95f;
+                                      if (dist > maxR) {
+                                          dx = (dx / dist) * maxR;
+                                          dy = (dy / dist) * maxR;
+                                      }
+                                      moveCurrX = moveOriginX + dx;
+                                      moveCurrY = moveOriginY + dy;
+                                      moveInputX = dx / maxR;
+                                      moveInputY = dy / maxR;
+                                  } else if (pid == aimPointerId) {
+                                      float dx = px - aimOriginX;
+                                      float dy = py - aimOriginY;
+                                      float dist = (float) Math.hypot(dx, dy);
+                                      float maxR = 95f;
+                                      if (dist > 10f) {
+                                          aimAngle = (float) Math.atan2(dy, dx);
+                                      }
+                                      if (dist > maxR) {
+                                          dx = (dx / dist) * maxR;
+                                          dy = (dy / dist) * maxR;
+                                      }
+                                      aimCurrX = aimOriginX + dx;
+                                      aimCurrY = aimOriginY + dy;
+                                  }
+                              }
+                              break;
+
+                          case MotionEvent.ACTION_UP:
+                          case MotionEvent.ACTION_POINTER_UP:
+                          case MotionEvent.ACTION_CANCEL:
+                              if (pointerId == movePointerId) {
+                                  movePointerId = -1;
+                                  moveInputX = 0f;
+                                  moveInputY = 0f;
+                              } else if (pointerId == aimPointerId) {
+                                  aimPointerId = -1;
+                              } else if (pointerId == sprintPointerId) {
+                                  sprintPointerId = -1;
+                                  sprinting = false;
+                              }
+                              break;
+                      }
+                      return true;
+                  }
+
+                  // =====================================================================
+                  // HELPERS & PROCEDURAL HORROR AUDIO SYNTHESIZER
+                  // =====================================================================
+                  private void setBanner(String msg, float duration) {
+                      statusBanner = msg;
+                      statusBannerTimer = duration;
+                  }
+
+                  private void vibrate(long ms) {
+                      if (vibrator != null && vibrator.hasVibrator()) {
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+                          } else {
+                              vibrator.vibrate(ms);
+                          }
+                      }
+                  }
+
+                  private float normalizeAngle(float a) {
+                      while (a > Math.PI) a -= (float) (2 * Math.PI);
+                      while (a < -Math.PI) a += (float) (2 * Math.PI);
+                      return a;
+                  }
+
+                  private float lerpAngle(float from, float to, float t) {
+                      float diff = normalizeAngle(to - from);
+                      return from + diff * Math.min(1f, t);
+                  }
+
+                  // Entities
+                  private static class BloodDecal {
+                      final float x, y, radius;
+                      BloodDecal(float x, float y, float radius) {
+                          this.x = x;
+                          this.y = y;
+                          this.radius = radius;
+                      }
+                  }
+
+                  private static class Generator {
+                      final float x, y;
+                      float progress = 0f;
+                      boolean repaired = false;
+                      Generator(float x, float y) {
+                          this.x = x;
+                          this.y = y;
+                      }
+                  }
+
+                  private static class Pickup {
+                      static final int TYPE_BATTERY = 0;
+                      static final int TYPE_MEDKIT = 1;
+                      final float x, y;
+                      final int type;
+                      Pickup(float x, float y, int type) {
+                          this.x = x;
+                          this.y = y;
+                          this.type = type;
+                      }
+                  }
+
+                  private static class Monster {
+                      static final int TYPE_STALKER = 0;
+                      static final int TYPE_STATUE = 1;
+                      static final int TYPE_PHANTASM = 2;
+
+                      float x, y, targetX, targetY;
+                      final int type;
+                      final float radius = 26f;
+                      final float patrolSpeed;
+                      final float chaseSpeed;
+                      boolean chasing = false;
+                      boolean frozenByBeam = false;
+                      float alertTimer = 0f;
+                      float stuckTimer = 0f;
+                      float attackCooldown = 0f;
+
+                      Monster(float x, float y, int type, int night) {
+                          this.x = x;
+                          this.y = y;
+                          this.targetX = x;
+                          this.targetY = y;
+                          this.type = type;
+                          this.patrolSpeed = (type == TYPE_PHANTASM) ? (78f + night * 6f) : (115f + night * 8f);
+                          this.chaseSpeed = 215f + night * 12f;
+                      }
+                  }
+
+                  private static class Particle {
+                      float x, y, vx, vy, life;
+                      final int color;
+                      Particle(float x, float y, int color) {
+                          this.x = x;
+                          this.y = y;
+                          double ang = Math.random() * Math.PI * 2;
+                          float spd = 40f + (float) (Math.random() * 140f);
+                          this.vx = (float) Math.cos(ang) * spd;
+                          this.vy = (float) Math.sin(ang) * spd;
+                          this.life = 0.35f + (float) (Math.random() * 0.35f);
+                          this.color = color;
+                      }
+                  }
+
+                  private static class SoundRipple {
+                      final float x, y, maxRadius;
+                      float radius = 10f;
+                      SoundRipple(float x, float y, float maxRadius) {
+                          this.x = x;
+                          this.y = y;
+                          this.maxRadius = maxRadius;
+                      }
+                  }
+
+                  // Real-time procedural sound synthesizer using Android AudioTrack
+                  private static class SoundSynthesizer implements Runnable {
+                      private Thread audioThread;
+                      private volatile boolean active = false;
+                      private volatile float dangerIntensity = 0f;
+                      private volatile int effectTrigger = 0; // 1=click, 2=heartbeat, 3=pickup, 4=chime, 5=shriek
+
+                      void start() {
+                          active = true;
+                          audioThread = new Thread(this, "HorrorAudioSynth");
+                          audioThread.start();
+                      }
+
+                      void stop() {
+                          active = false;
+                          try {
+                              if (audioThread != null) audioThread.join(300);
+                          } catch (InterruptedException ignored) {
+                          }
+                      }
+
+                      void setDangerIntensity(float d) { this.dangerIntensity = d; }
+                      void playClick() { this.effectTrigger = 1; }
+                      void playHeartbeat() { if (this.effectTrigger == 0) this.effectTrigger = 2; }
+                      void playPickup() { this.effectTrigger = 3; }
+                      void playGeneratorChime() { this.effectTrigger = 4; }
+                      void playJumpscareShriek() { this.effectTrigger = 5; }
+
+                      @Override
+                      public void run() {
+                          final int sampleRate = 22050;
+                          int minBuf = AudioTrack.getMinBufferSize(
+                                  sampleRate,
+                                  AudioFormat.CHANNEL_OUT_MONO,
+                                  AudioFormat.ENCODING_PCM_16BIT
+                          );
+                          if (minBuf <= 0) return;
+
+                          AudioTrack track;
+                          try {
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                  track = new AudioTrack.Builder()
+                                          .setAudioAttributes(new AudioAttributes.Builder()
+                                                  .setUsage(AudioAttributes.USAGE_GAME)
+                                                  .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                                  .build())
+                                          .setAudioFormat(new AudioFormat.Builder()
+                                                  .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                                  .setSampleRate(sampleRate)
+                                                  .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                                  .build())
+                                          .setBufferSizeInBytes(minBuf)
+                                          .setTransferMode(AudioTrack.MODE_STREAM)
+                                          .build();
+                              } else {
+                                  track = new AudioTrack(
+                                          AudioManager.STREAM_MUSIC,
+                                          sampleRate,
+                                          AudioFormat.CHANNEL_OUT_MONO,
+                                          AudioFormat.ENCODING_PCM_16BIT,
+                                          minBuf,
+                                          AudioTrack.MODE_STREAM
+                                  );
+                              }
+                              track.play();
+                          } catch (Exception e) {
+                              return;
+                          }
+
+                          short[] buffer = new short[512];
+                          double dronePhase = 0.0;
+                          int currentEffect = 0;
+                          int effectSampleIndex = 0;
+
+                          while (active) {
+                              if (effectTrigger != 0) {
+                                  currentEffect = effectTrigger;
+                                  effectTrigger = 0;
+                                  effectSampleIndex = 0;
+                              }
+
+                              for (int i = 0; i < buffer.length; i++) {
+                                  // Eerie low sub-bass horror drone
+                                  double droneFreq = 48.0 + dangerIntensity * 28.0;
+                                  dronePhase += (2.0 * Math.PI * droneFreq) / sampleRate;
+                                  double sample = Math.sin(dronePhase) * (0.08 + dangerIntensity * 0.14);
+
+                                  // Overlay active sound effect
+                                  if (currentEffect != 0) {
+                                      double t = effectSampleIndex / (double) sampleRate;
+                                      effectSampleIndex++;
+                                      if (currentEffect == 1) { // Flashlight click
+                                          if (t < 0.03) sample += (Math.random() - 0.5) * 0.7;
+                                          else currentEffect = 0;
+                                      } else if (currentEffect == 2) { // Heartbeat thump
+                                          if (t < 0.14) sample += Math.sin(2.0 * Math.PI * 55.0 * t) * Math.exp(-t * 22.0) * 0.65;
+                                          else currentEffect = 0;
+                                      } else if (currentEffect == 3) { // Pickup tone
+                                          if (t < 0.18) sample += Math.sin(2.0 * Math.PI * 520.0 * t) * 0.35;
+                                          else currentEffect = 0;
+                                      } else if (currentEffect == 4) { // Generator online chord
+                                          if (t < 0.35) sample += Math.sin(2.0 * Math.PI * (440.0 + t * 300.0) * t) * 0.4;
+                                          else currentEffect = 0;
+                                      } else if (currentEffect == 5) { // Jumpscare shriek
+                                          if (t < 0.45) {
+                                              sample += (Math.sin(2.0 * Math.PI * 880.0 * t) + (Math.random() - 0.5)) * 0.55;
+                                          } else {
+                                              currentEffect = 0;
+                                          }
+                                      }
+                                  }
+
+                                  if (sample > 1.0) sample = 1.0;
+                                  if (sample < -1.0) sample = -1.0;
+                                  buffer[i] = (short) (sample * 32767);
+                              }
+                              track.write(buffer, 0, buffer.length);
+                          }
+
+                          try {
+                              track.stop();
+                              track.release();
+                          } catch (Exception ignored) {
+                          }
+                      }
+                  }
               }
           }
           EOF
