@@ -1,4 +1,4 @@
-```java
+
 package com.shadowward.horror;
 
 import android.app.Activity;
@@ -1513,5 +1513,3 @@ public class MainActivity extends Activity {
             }
         }
     }
-}
-```
