@@ -1,0 +1,135 @@
+name: Android CI/CD (No-PC Horror Game APK Builder)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle 8.7 (Replaces gradlew so no PC is needed)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Resolve Version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "VERSION_NAME=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          else
+            echo "VERSION_NAME=1.0.${{ github.run_number }}" >> $GITHUB_ENV
+          fi
+
+      - name: Scaffold Complete Android Project Structure
+        run: |
+          mkdir -p app/src/main/java/com/shadowward/horror
+          if [ -f "MainActivity.java" ]; then
+            cp MainActivity.java app/src/main/java/com/shadowward/horror/MainActivity.java
+          fi
+          printf '%s\n' \
+            'pluginManagement {' \
+            '    repositories {' \
+            '        google()' \
+            '        mavenCentral()' \
+            '        gradlePluginPortal()' \
+            '    }' \
+            '}' \
+            'dependencyResolutionManagement {' \
+            '    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)' \
+            '    repositories {' \
+            '        google()' \
+            '        mavenCentral()' \
+            '    }' \
+            '}' \
+            'rootProject.name = "ShadowWardHorror"' \
+            'include ":app"' > settings.gradle
+
+          printf '%s\n' \
+            'plugins {' \
+            '    id "com.android.application" version "8.5.0" apply false' \
+            '}' > build.gradle
+
+          printf '%s\n' \
+            'plugins {' \
+            '    id "com.android.application"' \
+            '}' \
+            'android {' \
+            '    namespace "com.shadowward.horror"' \
+            '    compileSdk 34' \
+            '    defaultConfig {' \
+            '        applicationId "com.shadowward.horror"' \
+            '        minSdk 24' \
+            '        targetSdk 34' \
+            '        versionCode ${{ github.run_number }}' \
+            '        versionName "${{ env.VERSION_NAME }}"' \
+            '    }' \
+            '    buildTypes {' \
+            '        release {' \
+            '            minifyEnabled false' \
+            '        }' \
+            '    }' \
+            '    compileOptions {' \
+            '        sourceCompatibility JavaVersion.VERSION_17' \
+            '        targetCompatibility JavaVersion.VERSION_17' \
+            '    }' \
+            '}' \
+            'dependencies {' \
+            '}' > app/build.gradle
+
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="utf-8"?>' \
+            '<manifest xmlns:android="http://schemas.android.com/apk/res/android">' \
+            '    <uses-permission android:name="android.permission.VIBRATE" />' \
+            '    <application' \
+            '        android:allowBackup="true"' \
+            '        android:label="Shadow Ward"' \
+            '        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">' \
+            '        <activity' \
+            '            android:name=".MainActivity"' \
+            '            android:exported="true"' \
+            '            android:screenOrientation="sensorLandscape"' \
+            '            android:configChanges="orientation|screenSize|keyboardHidden">' \
+            '            <intent-filter>' \
+            '                <action android:name="android.intent.action.MAIN" />' \
+            '                <category android:name="android.intent.category.LAUNCHER" />' \
+            '            </intent-filter>' \
+            '        </activity>' \
+            '    </application>' \
+            '</manifest>' > app/src/main/AndroidManifest.xml
+
+      - name: Build Debug APK
+        run: gradle clean assembleDebug --no-daemon
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ env.VERSION_NAME }}
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Create GitHub Release with Direct APK Download
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION_NAME }}
+          name: Shadow Ward v${{ env.VERSION_NAME }}
+          generate_release_notes: true
+          files: app/build/outputs/apk/debug/*.apk
