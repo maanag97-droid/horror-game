@@ -1,4 +1,3 @@
-
 package com.shadowward.horror;
 
 import android.app.Activity;
@@ -7,14 +6,10 @@ import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
+import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffXfermode;
-import android.graphics.RadialGradient;
 import android.graphics.RectF;
-import android.graphics.Shader;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
@@ -36,14 +31,15 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * SHADOW WARD: 2D Top-Down Survival Horror Game
- * Designed for Samsung Galaxy A17 5G (1080x2340 Super AMOLED 90Hz Display).
- * Zero external assets required: procedural maps, raycast flashlight shadows,
- * multi-touch dual joysticks, 3 horror monster AI types, and synthesized audio.
+ * PHANTOM PRISM: 3D Ghost-Paper & Pyramid Hologram Ghost-Hunter
+ * Engineered for Samsung Galaxy A17 5G Super AMOLED (#000000 True Black).
+ * Supports both:
+ *  1) 45-Degree Ghost Paper (Pepper's Ghost Sheet) Mode
+ *  2) 4-Sided Hologram Pyramid Mode
  */
 public class MainActivity extends Activity {
 
-    private HorrorGameView gameView;
+    private HologramGameView gameView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,10 +49,15 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         );
+        // Maximum screen brightness for crisp Ghost Paper & Pyramid reflections
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 1.0f;
+        getWindow().setAttributes(lp);
+
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         hideSystemUI();
 
-        gameView = new HorrorGameView(this);
+        gameView = new HologramGameView(this);
         setContentView(gameView);
     }
 
@@ -76,23 +77,16 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         hideSystemUI();
-        if (gameView != null) {
-            gameView.resume();
-        }
+        if (gameView != null) gameView.resume();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        if (gameView != null) {
-            gameView.pause();
-        }
+        if (gameView != null) gameView.pause();
     }
 
-    // =========================================================================
-    // MAIN GAME SURFACE VIEW
-    // =========================================================================
-    public static class HorrorGameView extends SurfaceView implements Runnable {
+    public static class HologramGameView extends SurfaceView implements Runnable {
 
         private Thread gameThread;
         private volatile boolean running = false;
@@ -101,96 +95,95 @@ public class MainActivity extends Activity {
         private final Vibrator vibrator;
         private final Random rng = new Random();
 
-        // Game States
-        private static final int STATE_MENU = 0;
-        private static final int STATE_PLAYING = 1;
-        private static final int STATE_NIGHT_CLEARED = 2;
-        private static final int STATE_GAME_OVER = 3;
-        private int gameState = STATE_MENU;
+        // Display Modes
+        private static final int MODE_GHOST_PAPER = 0; // 45-deg sheet (Top 70% hologram, Bottom 30% controls)
+        private static final int MODE_PYRAMID_4WAY = 1; // 4-sided center pyramid + outer corner controls
+        private int displayMode = MODE_GHOST_PAPER;
+        private boolean mirrorFlip = true; // Mirror vertical axis so 45-deg reflection is upright
+        private float holoScale = 1.0f;    // Adjustable size calibration (0.65f .. 1.35f)
 
-        // World & Tile Grid Constants
-        private static final int MAP_COLS = 36;
-        private static final int MAP_ROWS = 26;
-        private static final float TILE_SIZE = 96f;
-        private static final int TILE_WALL = 1;
-        private static final int TILE_FLOOR = 0;
-        private static final int TILE_EXIT_LOCKED = 2;
-        private static final int TILE_EXIT_OPEN = 3;
+        // Game State
+        private boolean gameOver = false;
+        private int score = 0;
+        private int bestScore = 0;
+        private int wave = 1;
+        private int ghostsBanished = 0;
+        private float playerShieldHP = 100f;
+        private float beamEnergy = 100f;
+        private float novaCharge = 100f;
+        private float tunnelScrollZ = 0f;
+        private float novaShockwaveZ = -1f;
+        private float damageFlash = 0f;
 
-        private final int[][] map = new int[MAP_ROWS][MAP_COLS];
-        private final List<RectF> wallRects = new ArrayList<>();
-        private final List<BloodDecal> decals = new ArrayList<>();
-        private final List<Generator> generators = new ArrayList<>();
-        private final List<Pickup> pickups = new ArrayList<>();
-        private final List<Monster> monsters = new ArrayList<>();
-        private final List<Particle> particles = new ArrayList<>();
-        private final List<SoundRipple> ripples = new ArrayList<>();
+        // 3D Crosshair & Parallax Camera (-1.0 .. +1.0)
+        private float aimX = 0f;
+        private float aimY = 0f;
+        private float camParallaxX = 0f;
+        private float camParallaxY = 0f;
+        private boolean firingBeam = false;
+        private boolean shieldActive = false;
 
-        // Player State
-        private float playerX;
-        private float playerY;
-        private float playerRadius = 26f;
-        private float aimAngle = 0f; // Radians
-        private float health = 100f;
-        private float stamina = 100f;
-        private float battery = 100f;
-        private boolean flashlightOn = true;
-        private boolean sprinting = false;
-        private boolean staminaExhausted = false;
+        // Entities in 3D Tunnel (x, y in -1.2..1.2, z in 1.0..12.0 where 1.0 is player screen plane)
+        private final List<HoloGhost> ghosts = new ArrayList<>();
+        private final List<SoulOrb> enemyOrbs = new ArrayList<>();
+        private final List<HoloParticle> particles = new ArrayList<>();
+        private float spawnTimer = 0f;
 
-        // Progression & Metrics
-        private int currentNight = 1;
-        private int bestNight = 1;
-        private int totalGeneratorsRepaired = 0;
-        private int generatorsNeeded = 4;
-        private int generatorsDone = 0;
-        private float exitX, exitY;
-        private float dangerLevel = 0f; // 0..1 proximity terror
-        private float heartbeatTimer = 0f;
-        private float screenShake = 0f;
-        private float jumpscareFlash = 0f;
-        private String statusBanner = "";
-        private float statusBannerTimer = 0f;
+        // Touch Controls
+        private int joyPointerId = -1;
+        private float joyBaseX, joyBaseY, joyKnobX, joyKnobY;
+        private float joyVecX = 0f, joyVecY = 0f;
 
-        // Touch Controls (Dual Virtual Joysticks + Action Buttons)
-        private int movePointerId = -1;
-        private float moveOriginX, moveOriginY, moveCurrX, moveCurrY;
-        private float moveInputX = 0f, moveInputY = 0f;
+        private int beamPointerId = -1;
+        private int shieldPointerId = -1;
 
-        private int aimPointerId = -1;
-        private float aimOriginX, aimOriginY, aimCurrX, aimCurrY;
+        private final RectF btnBeam = new RectF();
+        private final RectF btnNova = new RectF();
+        private final RectF btnShield = new RectF();
+        private final RectF btnToggleMode = new RectF();
+        private final RectF btnToggleMirror = new RectF();
+        private final RectF btnScaleMinus = new RectF();
+        private final RectF btnScalePlus = new RectF();
 
-        private int sprintPointerId = -1;
-        private final RectF btnFlashlight = new RectF();
-        private final RectF btnSprint = new RectF();
-        private final RectF btnRadarPing = new RectF();
-        private float radarCooldown = 0f;
-        private float radarActiveTimer = 0f;
-
-        // Rendering Objects
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint darknessPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint lightClearPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint coneGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Path lightPolyPath = new Path();
+        private final Path tempPath = new Path();
+        private final DashPathEffect dashEffect = new DashPathEffect(new float[]{18f, 14f}, 0f);
+        private final HoloSoundSynth soundSynth = new HoloSoundSynth();
 
-        private SoundSynthesizer soundSynth;
-
-        public HorrorGameView(Context context) {
+        public HologramGameView(Context context) {
             super(context);
             holder = getHolder();
-            prefs = context.getSharedPreferences("shadow_ward_prefs", Context.MODE_PRIVATE);
-            bestNight = prefs.getInt("best_night", 1);
+            prefs = context.getSharedPreferences("phantom_prism_prefs", Context.MODE_PRIVATE);
+            bestScore = prefs.getInt("best_score", 0);
             vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            resetGame();
+        }
 
-            lightClearPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_OUT));
-            soundSynth = new SoundSynthesizer();
+        private void resetGame() {
+            gameOver = false;
+            score = 0;
+            wave = 1;
+            ghostsBanished = 0;
+            playerShieldHP = 100f;
+            beamEnergy = 100f;
+            novaCharge = 100f;
+            aimX = 0f;
+            aimY = 0f;
+            ghosts.clear();
+            enemyOrbs.clear();
+            particles.clear();
+            spawnInitialWave();
+        }
+
+        private void spawnInitialWave() {
+            ghosts.add(new HoloGhost(0f, -0.1f, 8.5f, HoloGhost.TYPE_SKULL, wave));
+            ghosts.add(new HoloGhost(-0.55f, 0.15f, 10.5f, HoloGhost.TYPE_WRAITH, wave));
         }
 
         public void resume() {
             running = true;
             soundSynth.start();
-            gameThread = new Thread(this, "HorrorGameLoop");
+            gameThread = new Thread(this, "HoloGameLoop");
             gameThread.start();
         }
 
@@ -198,9 +191,7 @@ public class MainActivity extends Activity {
             running = false;
             soundSynth.stop();
             try {
-                if (gameThread != null) {
-                    gameThread.join(500);
-                }
+                if (gameThread != null) gameThread.join(400);
             } catch (InterruptedException ignored) {
             }
         }
@@ -212,17 +203,19 @@ public class MainActivity extends Activity {
                 long now = System.nanoTime();
                 float dt = (now - lastTime) / 1_000_000_000f;
                 lastTime = now;
-                if (dt > 0.05f) dt = 0.05f; // Cap delta time
+                if (dt > 0.05f) dt = 0.05f;
 
                 if (holder.getSurface().isValid()) {
                     Canvas canvas = holder.lockCanvas();
                     if (canvas != null) {
                         try {
-                            updateUIButtonBounds(canvas.getWidth(), canvas.getHeight());
-                            if (gameState == STATE_PLAYING) {
+                            int sw = canvas.getWidth();
+                            int sh = canvas.getHeight();
+                            updateControlBounds(sw, sh);
+                            if (!gameOver) {
                                 updateGame(dt);
                             }
-                            renderGame(canvas, dt);
+                            renderScreen(canvas, sw, sh, dt);
                         } finally {
                             holder.unlockCanvasAndPost(canvas);
                         }
@@ -232,953 +225,613 @@ public class MainActivity extends Activity {
         }
 
         // =====================================================================
-        // LEVEL GENERATION (PROCEDURAL HAUNTED ASYLUM)
-        // =====================================================================
-        private void startNewGame(int night) {
-            currentNight = night;
-            if (night == 1) {
-                health = 100f;
-                battery = 100f;
-                totalGeneratorsRepaired = 0;
-            } else {
-                health = Math.min(100f, health + 35f);
-                battery = Math.min(100f, battery + 50f);
-            }
-            stamina = 100f;
-            flashlightOn = true;
-            sprinting = false;
-            generatorsNeeded = Math.min(7, 3 + night);
-            generatorsDone = 0;
-            radarCooldown = 0f;
-            radarActiveTimer = 0f;
-            jumpscareFlash = 0f;
-            screenShake = 0f;
-
-            generateAsylumMap();
-            setBanner("NIGHT " + currentNight + ": REPAIR " + generatorsNeeded + " GENERATORS TO POWER THE EXIT", 4.5f);
-            gameState = STATE_PLAYING;
-        }
-
-        private void generateAsylumMap() {
-            wallRects.clear();
-            decals.clear();
-            generators.clear();
-            pickups.clear();
-            monsters.clear();
-            particles.clear();
-            ripples.clear();
-
-            for (int r = 0; r < MAP_ROWS; r++) {
-                for (int c = 0; c < MAP_COLS; c++) {
-                    map[r][c] = TILE_WALL;
-                }
-            }
-
-            // Carve interconnected rooms & corridors
-            List<int[]> roomCenters = new ArrayList<>();
-            int roomAttempts = 22;
-            for (int i = 0; i < roomAttempts; i++) {
-                int rw = 3 + rng.nextInt(4);
-                int rh = 3 + rng.nextInt(4);
-                int rc = 2 + rng.nextInt(MAP_COLS - rw - 4);
-                int rr = 2 + rng.nextInt(MAP_ROWS - rh - 4);
-
-                for (int r = rr; r < rr + rh; r++) {
-                    for (int c = rc; c < rc + rw; c++) {
-                        map[r][c] = TILE_FLOOR;
-                    }
-                }
-                roomCenters.add(new int[]{rr + rh / 2, rc + rw / 2});
-            }
-
-            // Connect room centers with wide corridors so player doesn't get trapped
-            for (int i = 1; i < roomCenters.size(); i++) {
-                int[] a = roomCenters.get(i - 1);
-                int[] b = roomCenters.get(i);
-                carveCorridor(a[0], a[1], b[0], b[1]);
-            }
-            // Extra loop corridors so the player can juke monsters
-            for (int i = 0; i < roomCenters.size() / 2; i++) {
-                int[] a = roomCenters.get(rng.nextInt(roomCenters.size()));
-                int[] b = roomCenters.get(rng.nextInt(roomCenters.size()));
-                carveCorridor(a[0], a[1], b[0], b[1]);
-            }
-
-            // Enforce solid perimeter walls
-            for (int r = 0; r < MAP_ROWS; r++) {
-                map[r][0] = TILE_WALL;
-                map[r][MAP_COLS - 1] = TILE_WALL;
-            }
-            for (int c = 0; c < MAP_COLS; c++) {
-                map[0][c] = TILE_WALL;
-                map[MAP_ROWS - 1][c] = TILE_WALL;
-            }
-
-            // Build wall collision rectangles
-            for (int r = 0; r < MAP_ROWS; r++) {
-                for (int c = 0; c < MAP_COLS; c++) {
-                    if (map[r][c] == TILE_WALL) {
-                        wallRects.add(new RectF(
-                                c * TILE_SIZE,
-                                r * TILE_SIZE,
-                                (c + 1) * TILE_SIZE,
-                                (r + 1) * TILE_SIZE
-                        ));
-                    } else if (rng.nextFloat() < 0.08f) {
-                        decals.add(new BloodDecal(
-                                (c + 0.2f + rng.nextFloat() * 0.6f) * TILE_SIZE,
-                                (r + 0.2f + rng.nextFloat() * 0.6f) * TILE_SIZE,
-                                14f + rng.nextFloat() * 24f
-                        ));
-                    }
-                }
-            }
-
-            // Place Player in first room
-            int[] startRoom = roomCenters.get(0);
-            playerX = (startRoom[1] + 0.5f) * TILE_SIZE;
-            playerY = (startRoom[0] + 0.5f) * TILE_SIZE;
-
-            // Place Exit Elevator far from player
-            int[] exitTile = findFarFloorTile(playerX, playerY, 900f);
-            map[exitTile[0]][exitTile[1]] = TILE_EXIT_LOCKED;
-            exitX = (exitTile[1] + 0.5f) * TILE_SIZE;
-            exitY = (exitTile[0] + 0.5f) * TILE_SIZE;
-
-            // Place Generators
-            for (int i = 0; i < generatorsNeeded; i++) {
-                int[] gt = findFarFloorTile(playerX, playerY, 450f);
-                float gx = (gt[1] + 0.5f) * TILE_SIZE;
-                float gy = (gt[0] + 0.5f) * TILE_SIZE;
-                generators.add(new Generator(gx, gy));
-            }
-
-            // Place Batteries & Medkits
-            int batteryCount = 5 + currentNight;
-            for (int i = 0; i < batteryCount; i++) {
-                int[] bt = findFarFloorTile(playerX, playerY, 200f);
-                pickups.add(new Pickup((bt[1] + 0.5f) * TILE_SIZE, (bt[0] + 0.5f) * TILE_SIZE, Pickup.TYPE_BATTERY));
-            }
-            int medkitCount = 3;
-            for (int i = 0; i < medkitCount; i++) {
-                int[] mt = findFarFloorTile(playerX, playerY, 300f);
-                pickups.add(new Pickup((mt[1] + 0.5f) * TILE_SIZE, (mt[0] + 0.5f) * TILE_SIZE, Pickup.TYPE_MEDKIT));
-            }
-
-            // Spawn Horror Monsters
-            int monsterCount = 3 + currentNight;
-            for (int i = 0; i < monsterCount; i++) {
-                int[] mt = findFarFloorTile(playerX, playerY, 750f);
-                int type = i % 3; // 0 = Stalker, 1 = Weeping Statue, 2 = Phantasm
-                monsters.add(new Monster((mt[1] + 0.5f) * TILE_SIZE, (mt[0] + 0.5f) * TILE_SIZE, type, currentNight));
-            }
-        }
-
-        private void carveCorridor(int r1, int c1, int r2, int c2) {
-            int r = r1;
-            int c = c1;
-            while (c != c2) {
-                map[r][c] = TILE_FLOOR;
-                if (r + 1 < MAP_ROWS - 1) map[r + 1][c] = TILE_FLOOR;
-                c += (c2 > c) ? 1 : -1;
-            }
-            while (r != r2) {
-                map[r][c] = TILE_FLOOR;
-                if (c + 1 < MAP_COLS - 1) map[r][c + 1] = TILE_FLOOR;
-                r += (r2 > r) ? 1 : -1;
-            }
-        }
-
-        private int[] findFarFloorTile(float fromX, float fromY, float minDist) {
-            for (int attempt = 0; attempt < 250; attempt++) {
-                int r = 2 + rng.nextInt(MAP_ROWS - 4);
-                int c = 2 + rng.nextInt(MAP_COLS - 4);
-                if (map[r][c] == TILE_FLOOR) {
-                    float tx = (c + 0.5f) * TILE_SIZE;
-                    float ty = (r + 0.5f) * TILE_SIZE;
-                    float dist = (float) Math.hypot(tx - fromX, ty - fromY);
-                    if (dist >= minDist || attempt > 200) {
-                        return new int[]{r, c};
-                    }
-                }
-            }
-            return new int[]{MAP_ROWS / 2, MAP_COLS / 2};
-        }
-
-        // =====================================================================
-        // GAME UPDATE LOOP
+        // UPDATE 3D HOLOGRAM GAME LOGIC
         // =====================================================================
         private void updateGame(float dt) {
-            if (statusBannerTimer > 0f) statusBannerTimer -= dt;
-            if (radarCooldown > 0f) radarCooldown -= dt;
-            if (radarActiveTimer > 0f) radarActiveTimer -= dt;
-            if (screenShake > 0f) screenShake = Math.max(0f, screenShake - dt * 25f);
-            if (jumpscareFlash > 0f) jumpscareFlash = Math.max(0f, jumpscareFlash - dt * 2.2f);
+            // Move 3D corridor grid toward viewer
+            tunnelScrollZ += dt * (2.6f + wave * 0.25f);
+            if (tunnelScrollZ >= 1.5f) tunnelScrollZ -= 1.5f;
 
-            // 1. Update Stamina & Player Movement
-            float moveMag = (float) Math.hypot(moveInputX, moveInputY);
-            boolean moving = moveMag > 0.12f;
+            if (damageFlash > 0f) damageFlash = Math.max(0f, damageFlash - dt * 2.5f);
 
-            if (sprinting && moving && !staminaExhausted) {
-                stamina -= dt * 28f;
-                if (stamina <= 0f) {
-                    stamina = 0f;
-                    staminaExhausted = true;
-                    setBanner("EXHAUSTED! CATCH YOUR BREATH...", 2.0f);
-                }
+            // Update crosshair & parallax camera from left joystick
+            aimX = Math.max(-0.95f, Math.min(0.95f, aimX + joyVecX * dt * 1.45f));
+            aimY = Math.max(-0.75f, Math.min(0.75f, aimY + joyVecY * dt * 1.45f));
+            camParallaxX += (aimX * 0.35f - camParallaxX) * dt * 6f;
+            camParallaxY += (aimY * 0.35f - camParallaxY) * dt * 6f;
+
+            // Energy & Nova recharge
+            if (firingBeam && beamEnergy > 0f) {
+                beamEnergy = Math.max(0f, beamEnergy - dt * 22f);
+                soundSynth.setLaserActive(true);
             } else {
-                stamina = Math.min(100f, stamina + dt * 16f);
-                if (stamina > 30f) staminaExhausted = false;
+                firingBeam = false;
+                soundSynth.setLaserActive(false);
+                beamEnergy = Math.min(100f, beamEnergy + dt * 18f);
             }
 
-            float baseSpeed = (sprinting && !staminaExhausted) ? 310f : 195f;
-            float vx = moveInputX * baseSpeed;
-            float vy = moveInputY * baseSpeed;
-
-            moveEntityWithWallSliding(vx * dt, vy * dt);
-
-            // Auto-aim along movement if right stick isn't actively held
-            if (aimPointerId == -1 && moving) {
-                float targetAngle = (float) Math.atan2(moveInputY, moveInputX);
-                aimAngle = lerpAngle(aimAngle, targetAngle, dt * 8f);
-            }
-
-            // Emit footsteps noise ripples when sprinting
-            if (moving && sprinting && !staminaExhausted && rng.nextFloat() < dt * 5f) {
-                ripples.add(new SoundRipple(playerX, playerY, 420f));
-                alertMonstersToNoise(playerX, playerY, 480f);
-            }
-
-            // 2. Update Flashlight Battery
-            if (flashlightOn) {
-                battery -= dt * (1.85f + currentNight * 0.15f);
-                if (battery <= 0f) {
-                    battery = 0f;
-                    flashlightOn = false;
-                    soundSynth.playClick();
-                    setBanner("BATTERY DEPLETED! FIND GREEN BATTERY CELLS!", 3.0f);
-                }
+            if (shieldActive && beamEnergy > 5f) {
+                beamEnergy = Math.max(0f, beamEnergy - dt * 14f);
             } else {
-                // Tiny passive trickle recovery up to 8% emergency reserve
-                if (battery < 8f) battery += dt * 0.6f;
+                shieldActive = false;
             }
 
-            // 3. Update Generators (Repair when standing nearby)
-            for (Generator gen : generators) {
-                if (!gen.repaired) {
-                    float dist = (float) Math.hypot(playerX - gen.x, playerY - gen.y);
-                    if (dist < 85f) {
-                        gen.progress += dt * 24f;
-                        // Sparks & mechanical hum noise
-                        if (rng.nextFloat() < dt * 8f) {
-                            particles.add(new Particle(gen.x, gen.y, Color.rgb(255, 210, 60)));
-                        }
-                        if (rng.nextFloat() < dt * 2.2f) {
-                            ripples.add(new SoundRipple(gen.x, gen.y, 550f));
-                            alertMonstersToNoise(gen.x, gen.y, 600f);
-                        }
-                        if (gen.progress >= 100f) {
-                            gen.progress = 100f;
-                            gen.repaired = true;
-                            generatorsDone++;
-                            totalGeneratorsRepaired++;
-                            soundSynth.playGeneratorChime();
-                            vibrate(60);
-                            if (generatorsDone >= generatorsNeeded) {
-                                unlockExit();
-                            } else {
-                                setBanner("GENERATOR REPAIRED (" + generatorsDone + "/" + generatorsNeeded + ")", 2.5f);
-                            }
-                        }
+            novaCharge = Math.min(100f, novaCharge + dt * 6.5f);
+
+            // Update Pulse Nova shockwave
+            if (novaShockwaveZ >= 0f) {
+                novaShockwaveZ += dt * 14f;
+                enemyOrbs.clear();
+                for (HoloGhost g : ghosts) {
+                    if (Math.abs(g.z - novaShockwaveZ) < 1.2f) {
+                        g.hp -= dt * 160f;
+                        spawnHoloSparks(g.x, g.y, g.z, Color.rgb(0, 255, 255), 4);
                     }
                 }
+                if (novaShockwaveZ > 12.5f) novaShockwaveZ = -1f;
             }
 
-            // 4. Check Pickups
-            Iterator<Pickup> pit = pickups.iterator();
-            while (pit.hasNext()) {
-                Pickup p = pit.next();
-                if (Math.hypot(playerX - p.x, playerY - p.y) < 48f) {
-                    if (p.type == Pickup.TYPE_BATTERY) {
-                        battery = Math.min(100f, battery + 45f);
-                        setBanner("+45% FLASHLIGHT BATTERY", 2.0f);
-                    } else {
-                        health = Math.min(100f, health + 40f);
-                        stamina = 100f;
-                        setBanner("+40 HEALTH & ADRENALINE BOOST", 2.0f);
-                    }
-                    soundSynth.playPickup();
-                    vibrate(30);
-                    pit.remove();
-                }
+            // Spawn new ghosts in 3D depth
+            spawnTimer -= dt;
+            int maxGhosts = Math.min(7, 2 + wave);
+            if (spawnTimer <= 0f && ghosts.size() < maxGhosts) {
+                spawnTimer = Math.max(1.1f, 2.8f - wave * 0.18f);
+                int type = rng.nextInt(3); // 0=Skull, 1=Crimson Wraith, 2=Phase Banshee
+                float gx = (rng.nextFloat() - 0.5f) * 1.3f;
+                float gy = (rng.nextFloat() - 0.5f) * 0.85f;
+                ghosts.add(new HoloGhost(gx, gy, 11.2f, type, wave));
             }
 
-            // 5. Check Unlocked Exit
-            if (generatorsDone >= generatorsNeeded) {
-                if (Math.hypot(playerX - exitX, playerY - exitY) < 62f) {
-                    soundSynth.playGeneratorChime();
-                    vibrate(120);
-                    if (currentNight >= bestNight) {
-                        bestNight = currentNight + 1;
-                        prefs.edit().putInt("best_night", bestNight).apply();
-                    }
-                    gameState = STATE_NIGHT_CLEARED;
-                    return;
-                }
-            }
+            // Update Ghosts
+            Iterator<HoloGhost> git = ghosts.iterator();
+            while (git.hasNext()) {
+                HoloGhost g = git.next();
+                g.phase += dt * 3.2f;
+                g.z -= dt * g.speedZ;
 
-            // 6. Update Monsters & Terror Level
-            float closestMonsterDist = 9999f;
-            for (Monster m : monsters) {
-                float dist = (float) Math.hypot(playerX - m.x, playerY - m.y);
-                if (dist < closestMonsterDist) closestMonsterDist = dist;
-
-                boolean inBeam = isPointInFlashlightCone(m.x, m.y) && hasLineOfSight(playerX, playerY, m.x, m.y);
-                m.frozenByBeam = false;
-
-                if (m.type == Monster.TYPE_STATUE) {
-                    // Weeping Statue freezes completely when watched in flashlight beam!
-                    if (inBeam) {
-                        m.frozenByBeam = true;
-                    } else if (dist < 780f) {
-                        m.targetX = playerX;
-                        m.targetY = playerY;
-                        m.chasing = true;
-                        moveMonster(m, dt, m.chaseSpeed * 1.25f, false);
-                    }
-                } else if (m.type == Monster.TYPE_PHANTASM) {
-                    // Spectral Wraith phases slowly through walls and drains battery when close
-                    m.targetX = playerX;
-                    m.targetY = playerY;
-                    moveMonster(m, dt, m.patrolSpeed, true);
-                    if (dist < 220f && flashlightOn) {
-                        battery = Math.max(0f, battery - dt * 4.5f);
+                if (g.type == HoloGhost.TYPE_SKULL) {
+                    g.x = g.baseX + (float) Math.sin(g.phase) * 0.32f;
+                    g.y = g.baseY + (float) Math.cos(g.phase * 0.7f) * 0.18f;
+                } else if (g.type == HoloGhost.TYPE_WRAITH) {
+                    g.x = g.baseX + (float) Math.sin(g.phase * 0.6f) * 0.42f;
+                    g.attackCooldown -= dt;
+                    if (g.attackCooldown <= 0f && g.z > 2.8f && g.z < 9.5f) {
+                        g.attackCooldown = Math.max(1.4f, 3.0f - wave * 0.12f);
+                        enemyOrbs.add(new SoulOrb(g.x, g.y, g.z));
+                        soundSynth.triggerEffect(HoloSoundSynth.FX_ORB);
                     }
                 } else {
-                    // The Stalker: Hunts by sight (worse when your flashlight is ON) and sound
-                    float sightRange = flashlightOn ? 520f : 185f;
-                    if (dist < sightRange && hasLineOfSight(m.x, m.y, playerX, playerY)) {
-                        m.targetX = playerX;
-                        m.targetY = playerY;
-                        m.alertTimer = 5.0f;
-                        m.chasing = true;
-                    } else if (m.alertTimer > 0f) {
-                        m.alertTimer -= dt;
-                        m.chasing = true;
-                    } else {
-                        m.chasing = false;
-                        if (Math.hypot(m.targetX - m.x, m.targetY - m.y) < 40f || m.stuckTimer > 1.2f) {
-                            int[] pt = findFarFloorTile(m.x, m.y, 200f);
-                            m.targetX = (pt[1] + 0.5f) * TILE_SIZE;
-                            m.targetY = (pt[0] + 0.5f) * TILE_SIZE;
-                            m.stuckTimer = 0f;
+                    // Phase Banshee teleports side-to-side
+                    g.teleportTimer -= dt;
+                    if (g.teleportTimer <= 0f) {
+                        g.teleportTimer = 1.6f;
+                        g.baseX = (rng.nextFloat() - 0.5f) * 1.2f;
+                        g.baseY = (rng.nextFloat() - 0.5f) * 0.75f;
+                        g.x = g.baseX;
+                        g.y = g.baseY;
+                        spawnHoloSparks(g.x, g.y, g.z, Color.rgb(255, 60, 255), 8);
+                    }
+                }
+
+                // Check Proton Beam Hit on Ghost
+                if (firingBeam) {
+                    float hitRadius = 0.26f + (12f - g.z) * 0.015f;
+                    if (Math.hypot(aimX - g.x, aimY - g.y) < hitRadius) {
+                        g.hp -= dt * 88f;
+                        g.hitFlash = 0.15f;
+                        if (rng.nextFloat() < dt * 18f) {
+                            spawnHoloSparks(g.x, g.y, g.z, Color.rgb(100, 255, 255), 2);
                         }
                     }
-                    float spd = m.chasing ? m.chaseSpeed : m.patrolSpeed;
-                    moveMonster(m, dt, spd, false);
                 }
+                if (g.hitFlash > 0f) g.hitFlash -= dt;
 
-                // Monster Attack Check
-                if (dist < playerRadius + m.radius && m.attackCooldown <= 0f && !m.frozenByBeam) {
-                    health -= (22f + currentNight * 3f);
-                    m.attackCooldown = 1.35f;
-                    screenShake = 18f;
-                    jumpscareFlash = 1.0f;
-                    soundSynth.playJumpscareShriek();
-                    vibrate(250);
-                    for (int k = 0; k < 14; k++) {
-                        particles.add(new Particle(playerX, playerY, Color.rgb(220, 20, 30)));
+                // Ghost Banished!
+                if (g.hp <= 0f) {
+                    score += (g.type == HoloGhost.TYPE_WRAITH) ? 250 : 120;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        prefs.edit().putInt("best_score", bestScore).apply();
                     }
-                    if (health <= 0f) {
-                        health = 0f;
-                        gameState = STATE_GAME_OVER;
-                        return;
-                    }
+                    ghostsBanished++;
+                    if (ghostsBanished % 6 == 0) wave++;
+                    spawnHoloSparks(g.x, g.y, g.z, Color.rgb(80, 255, 190), 18);
+                    soundSynth.triggerEffect(HoloSoundSynth.FX_BANISH);
+                    vibrate(35);
+                    git.remove();
+                    continue;
                 }
-                if (m.attackCooldown > 0f) m.attackCooldown -= dt;
-            }
 
-            // Proximity Heartbeat & Terror Vignette
-            dangerLevel = Math.max(0f, Math.min(1f, 1f - (closestMonsterDist - 120f) / 520f));
-            soundSynth.setDangerIntensity(dangerLevel);
-            if (dangerLevel > 0.15f) {
-                heartbeatTimer -= dt * (1.2f + dangerLevel * 2.4f);
-                if (heartbeatTimer <= 0f) {
-                    heartbeatTimer = 1.0f;
-                    soundSynth.playHeartbeat();
-                    if (dangerLevel > 0.65f) vibrate(25);
-                }
-            }
-
-            // 7. Update Particles & Ripples
-            Iterator<Particle> partIt = particles.iterator();
-            while (partIt.hasNext()) {
-                Particle pt = partIt.next();
-                pt.x += pt.vx * dt;
-                pt.y += pt.vy * dt;
-                pt.life -= dt;
-                if (pt.life <= 0f) partIt.remove();
-            }
-
-            Iterator<SoundRipple> ripIt = ripples.iterator();
-            while (ripIt.hasNext()) {
-                SoundRipple sr = ripIt.next();
-                sr.radius += dt * 360f;
-                if (sr.radius >= sr.maxRadius) ripIt.remove();
-            }
-        }
-
-        private void unlockExit() {
-            for (int r = 0; r < MAP_ROWS; r++) {
-                for (int c = 0; c < MAP_COLS; c++) {
-                    if (map[r][c] == TILE_EXIT_LOCKED) {
-                        map[r][c] = TILE_EXIT_OPEN;
-                    }
-                }
-            }
-            setBanner("ALL GENERATORS ONLINE! ESCAPE TO THE GREEN EXIT ELEVATOR!", 5.0f);
-            alertMonstersToNoise(exitX, exitY, 900f);
-        }
-
-        private void alertMonstersToNoise(float nx, float ny, float radius) {
-            for (Monster m : monsters) {
-                if (m.type == Monster.TYPE_STALKER) {
-                    if (Math.hypot(m.x - nx, m.y - ny) <= radius) {
-                        m.targetX = nx;
-                        m.targetY = ny;
-                        m.alertTimer = 4.5f;
-                    }
-                }
-            }
-        }
-
-        private void moveEntityWithWallSliding(float dx, float dy) {
-            playerX += dx;
-            resolveWallCollisionForPlayer(true, dx);
-            playerY += dy;
-            resolveWallCollisionForPlayer(false, dy);
-        }
-
-        private void resolveWallCollisionForPlayer(boolean horizontal, float delta) {
-            for (RectF w : wallRects) {
-                if (circleIntersectsRect(playerX, playerY, playerRadius, w)) {
-                    if (horizontal) {
-                        if (delta > 0) playerX = w.left - playerRadius - 0.1f;
-                        else if (delta < 0) playerX = w.right + playerRadius + 0.1f;
+                // Ghost Reaches Player Screen Plane (z <= 1.25f)
+                if (g.z <= 1.25f) {
+                    if (shieldActive) {
+                        // Bounce ghost back!
+                        g.z = 5.5f;
+                        g.hp -= 35f;
+                        soundSynth.triggerEffect(HoloSoundSynth.FX_SHIELD);
+                        vibrate(30);
                     } else {
-                        if (delta > 0) playerY = w.top - playerRadius - 0.1f;
-                        else if (delta < 0) playerY = w.bottom + playerRadius + 0.1f;
+                        playerShieldHP -= 22f;
+                        damageFlash = 1.0f;
+                        soundSynth.triggerEffect(HoloSoundSynth.FX_HURT);
+                        vibrate(180);
+                        git.remove();
+                        if (playerShieldHP <= 0f) {
+                            playerShieldHP = 0f;
+                            gameOver = true;
+                            soundSynth.setLaserActive(false);
+                            return;
+                        }
                     }
                 }
             }
-        }
 
-        private void moveMonster(Monster m, float dt, float speed, boolean ignoreWalls) {
-            float dx = m.targetX - m.x;
-            float dy = m.targetY - m.y;
-            float dist = (float) Math.hypot(dx, dy);
-            if (dist < 2f) return;
-
-            float vx = (dx / dist) * speed * dt;
-            float vy = (dy / dist) * speed * dt;
-            float oldX = m.x;
-            float oldY = m.y;
-
-            m.x += vx;
-            if (!ignoreWalls) {
-                for (RectF w : wallRects) {
-                    if (circleIntersectsRect(m.x, m.y, m.radius, w)) {
-                        m.x = oldX;
-                        break;
+            // Update Incoming Enemy Soul Orbs
+            Iterator<SoulOrb> oit = enemyOrbs.iterator();
+            while (oit.hasNext()) {
+                SoulOrb orb = oit.next();
+                orb.z -= dt * 4.2f;
+                // Can shoot down orbs with Proton Beam
+                if (firingBeam && Math.hypot(aimX - orb.x, aimY - orb.y) < 0.22f) {
+                    spawnHoloSparks(orb.x, orb.y, orb.z, Color.rgb(255, 90, 90), 8);
+                    score += 25;
+                    oit.remove();
+                    continue;
+                }
+                if (orb.z <= 1.2f) {
+                    if (shieldActive) {
+                        soundSynth.triggerEffect(HoloSoundSynth.FX_SHIELD);
+                        score += 30;
+                    } else {
+                        playerShieldHP -= 12f;
+                        damageFlash = 0.7f;
+                        soundSynth.triggerEffect(HoloSoundSynth.FX_HURT);
+                        vibrate(90);
+                        if (playerShieldHP <= 0f) {
+                            playerShieldHP = 0f;
+                            gameOver = true;
+                            soundSynth.setLaserActive(false);
+                            return;
+                        }
                     }
+                    oit.remove();
                 }
             }
-            m.y += vy;
-            if (!ignoreWalls) {
-                for (RectF w : wallRects) {
-                    if (circleIntersectsRect(m.x, m.y, m.radius, w)) {
-                        m.y = oldY;
-                        break;
-                    }
-                }
-            }
-            if (Math.hypot(m.x - oldX, m.y - oldY) < speed * dt * 0.2f) {
-                m.stuckTimer += dt;
-            } else {
-                m.stuckTimer = 0f;
-            }
-        }
 
-        private boolean circleIntersectsRect(float cx, float cy, float r, RectF rect) {
-            float closestX = Math.max(rect.left, Math.min(cx, rect.right));
-            float closestY = Math.max(rect.top, Math.min(cy, rect.bottom));
-            float dx = cx - closestX;
-            float dy = cy - closestY;
-            return (dx * dx + dy * dy) < (r * r);
+            // Update 3D Hologram Particles
+            Iterator<HoloParticle> pit = particles.iterator();
+            while (pit.hasNext()) {
+                HoloParticle p = pit.next();
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.z += p.vz * dt;
+                p.life -= dt;
+                if (p.life <= 0f || p.z < 1.05f) pit.remove();
+            }
         }
 
         // =====================================================================
-        // RAYCAST FLASHLIGHT & LINE OF SIGHT
+        // RENDERING (PURE #000000 AMOLED BLACK FOR HOLOGRAM REFLECTION)
         // =====================================================================
-        private boolean isPointInFlashlightCone(float px, float py) {
-            if (!flashlightOn || battery <= 0f) return false;
-            float dx = px - playerX;
-            float dy = py - playerY;
-            float dist = (float) Math.hypot(dx, dy);
-            if (dist > 560f) return false;
-            float angleToPoint = (float) Math.atan2(dy, dx);
-            float diff = Math.abs(normalizeAngle(angleToPoint - aimAngle));
-            return diff <= Math.toRadians(34);
-        }
-
-        private boolean hasLineOfSight(float x1, float y1, float x2, float y2) {
-            float dist = (float) Math.hypot(x2 - x1, y2 - y1);
-            int steps = Math.max(2, (int) (dist / (TILE_SIZE * 0.4f)));
-            for (int i = 1; i < steps; i++) {
-                float t = i / (float) steps;
-                float sx = x1 + (x2 - x1) * t;
-                float sy = y1 + (y2 - y1) * t;
-                int c = (int) (sx / TILE_SIZE);
-                int r = (int) (sy / TILE_SIZE);
-                if (r >= 0 && r < MAP_ROWS && c >= 0 && c < MAP_COLS) {
-                    if (map[r][c] == TILE_WALL) return false;
-                }
-            }
-            return true;
-        }
-
-        private float castRay(float originX, float originY, float angle, float maxDist) {
-            float cos = (float) Math.cos(angle);
-            float sin = (float) Math.sin(angle);
-            float step = 12f;
-            for (float d = step; d <= maxDist; d += step) {
-                float rx = originX + cos * d;
-                float ry = originY + sin * d;
-                int c = (int) (rx / TILE_SIZE);
-                int r = (int) (ry / TILE_SIZE);
-                if (r < 0 || r >= MAP_ROWS || c < 0 || c >= MAP_COLS || map[r][c] == TILE_WALL) {
-                    return d;
-                }
-            }
-            return maxDist;
-        }
-
-        // =====================================================================
-        // RENDERING (OPTIMIZED FOR SAMSUNG GALAXY A17 5G SUPER AMOLED)
-        // =====================================================================
-        private void renderGame(Canvas canvas, float dt) {
-            int sw = canvas.getWidth();
-            int sh = canvas.getHeight();
-
-            // Pure AMOLED black background
+        private void renderScreen(Canvas canvas, int sw, int sh, float dt) {
+            // 100% Pure Black background so AMOLED emits zero stray light on Ghost Paper / Pyramid
             canvas.drawColor(Color.BLACK);
 
-            if (gameState == STATE_MENU) {
-                renderMenu(canvas, sw, sh);
-                return;
+            if (displayMode == MODE_GHOST_PAPER) {
+                renderGhostPaperLayout(canvas, sw, sh);
+            } else {
+                renderPyramid4WayLayout(canvas, sw, sh);
             }
+        }
 
-            // Camera Transform centered on Player with optional terror shake
-            float shakeX = (screenShake > 0f) ? (rng.nextFloat() - 0.5f) * screenShake : 0f;
-            float shakeY = (screenShake > 0f) ? (rng.nextFloat() - 0.5f) * screenShake : 0f;
-            float camX = playerX - sw / 2f + shakeX;
-            float camY = playerY - sh / 2f + shakeY;
+        private void renderGhostPaperLayout(Canvas canvas, int sw, int sh) {
+            float splitY = sh * 0.68f; // Top 68% = Hologram Projection, Bottom 32% = Arcade Touch Deck
+            float holoCenterX = sw * 0.5f;
+            float holoCenterY = splitY * 0.5f;
+            float vpHalfW = (sw * 0.42f) * holoScale;
+            float vpHalfH = (splitY * 0.44f) * holoScale;
 
+            // 1. Render Hologram Scene in Top 68%
             canvas.save();
-            canvas.translate(-camX, -camY);
-
-            // 1. Draw Visible Map Tiles
-            int minC = Math.max(0, (int) (camX / TILE_SIZE) - 1);
-            int maxC = Math.min(MAP_COLS - 1, (int) ((camX + sw) / TILE_SIZE) + 1);
-            int minR = Math.max(0, (int) (camY / TILE_SIZE) - 1);
-            int maxR = Math.min(MAP_ROWS - 1, (int) ((camY + sh) / TILE_SIZE) + 1);
-
-            for (int r = minR; r <= maxR; r++) {
-                for (int c = minC; c <= maxC; c++) {
-                    float left = c * TILE_SIZE;
-                    float top = r * TILE_SIZE;
-                    int tile = map[r][c];
-                    if (tile == TILE_WALL) {
-                        paint.setStyle(Paint.Style.FILL);
-                        paint.setColor(Color.rgb(24, 28, 34));
-                        canvas.drawRect(left, top, left + TILE_SIZE, top + TILE_SIZE, paint);
-                        paint.setStyle(Paint.Style.STROKE);
-                        paint.setStrokeWidth(3f);
-                        paint.setColor(Color.rgb(45, 52, 64));
-                        canvas.drawRect(left + 1.5f, top + 1.5f, left + TILE_SIZE - 1.5f, top + TILE_SIZE - 1.5f, paint);
-                    } else {
-                        paint.setStyle(Paint.Style.FILL);
-                        paint.setColor(((r + c) % 2 == 0) ? Color.rgb(16, 18, 22) : Color.rgb(13, 15, 19));
-                        canvas.drawRect(left, top, left + TILE_SIZE, top + TILE_SIZE, paint);
-
-                        if (tile == TILE_EXIT_LOCKED || tile == TILE_EXIT_OPEN) {
-                            paint.setColor(tile == TILE_EXIT_OPEN ? Color.rgb(25, 190, 95) : Color.rgb(150, 35, 35));
-                            canvas.drawRect(left + 10f, top + 10f, left + TILE_SIZE - 10f, top + TILE_SIZE - 10f, paint);
-                            paint.setColor(Color.WHITE);
-                            paint.setTextSize(22f);
-                            paint.setTextAlign(Paint.Align.CENTER);
-                            canvas.drawText(tile == TILE_EXIT_OPEN ? "EXIT OPEN" : "LOCKED", left + TILE_SIZE / 2f, top + TILE_SIZE / 2f + 8f, paint);
-                        }
-                    }
-                }
+            canvas.clipRect(0, 0, sw, splitY - 4f);
+            canvas.translate(holoCenterX, holoCenterY);
+            if (mirrorFlip) {
+                // Flip vertically so when reflected in a 45-degree Ghost Paper sheet tilted toward the player,
+                // the hologram and all HUD text appear right-side-up in mid-air!
+                canvas.scale(1f, -1f);
             }
-
-            // 2. Draw Blood Decals
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.argb(120, 110, 10, 15));
-            for (BloodDecal bd : decals) {
-                canvas.drawCircle(bd.x, bd.y, bd.radius, paint);
-            }
-
-            // 3. Draw Sound Ripples
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(2.5f);
-            for (SoundRipple sr : ripples) {
-                int alpha = (int) (160 * (1f - sr.radius / sr.maxRadius));
-                paint.setColor(Color.argb(Math.max(0, alpha), 120, 200, 255));
-                canvas.drawCircle(sr.x, sr.y, sr.radius, paint);
-            }
-
-            // 4. Draw Generators
-            for (Generator gen : generators) {
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(gen.repaired ? Color.rgb(40, 195, 100) : Color.rgb(190, 130, 30));
-                canvas.drawRoundRect(new RectF(gen.x - 28f, gen.y - 28f, gen.x + 28f, gen.y + 28f), 8f, 8f, paint);
-
-                // Progress ring
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(6f);
-                paint.setColor(gen.repaired ? Color.rgb(100, 255, 160) : Color.rgb(255, 215, 60));
-                RectF arcRect = new RectF(gen.x - 38f, gen.y - 38f, gen.x + 38f, gen.y + 38f);
-                canvas.drawArc(arcRect, -90f, (gen.progress / 100f) * 360f, false, paint);
-            }
-
-            // 5. Draw Pickups
-            for (Pickup p : pickups) {
-                paint.setStyle(Paint.Style.FILL);
-                if (p.type == Pickup.TYPE_BATTERY) {
-                    paint.setColor(Color.rgb(50, 235, 180));
-                    canvas.drawRect(p.x - 12f, p.y - 16f, p.x + 12f, p.y + 16f, paint);
-                } else {
-                    paint.setColor(Color.rgb(235, 65, 75));
-                    canvas.drawCircle(p.x, p.y, 16f, paint);
-                    paint.setColor(Color.WHITE);
-                    canvas.drawRect(p.x - 4f, p.y - 10f, p.x + 4f, p.y + 10f, paint);
-                    canvas.drawRect(p.x - 10f, p.y - 4f, p.x + 10f, p.y + 4f, paint);
-                }
-            }
-
-            // 6. Draw Monsters
-            for (Monster m : monsters) {
-                paint.setStyle(Paint.Style.FILL);
-                if (m.type == Monster.TYPE_STATUE) {
-                    paint.setColor(m.frozenByBeam ? Color.rgb(145, 150, 160) : Color.rgb(200, 190, 175));
-                    canvas.drawCircle(m.x, m.y, m.radius, paint);
-                } else if (m.type == Monster.TYPE_PHANTASM) {
-                    paint.setColor(Color.argb(170, 95, 180, 255));
-                    canvas.drawCircle(m.x, m.y, m.radius + 4f, paint);
-                } else {
-                    paint.setColor(Color.rgb(25, 10, 15));
-                    canvas.drawCircle(m.x, m.y, m.radius, paint);
-                }
-                // Glowing Monster Eyes
-                float angToPlayer = (float) Math.atan2(playerY - m.y, playerX - m.x);
-                float ex1 = m.x + (float) Math.cos(angToPlayer - 0.35f) * 14f;
-                float ey1 = m.y + (float) Math.sin(angToPlayer - 0.35f) * 14f;
-                float ex2 = m.x + (float) Math.cos(angToPlayer + 0.35f) * 14f;
-                float ey2 = m.y + (float) Math.sin(angToPlayer + 0.35f) * 14f;
-                paint.setColor(m.type == Monster.TYPE_PHANTASM ? Color.CYAN : Color.rgb(255, 30, 30));
-                canvas.drawCircle(ex1, ey1, 5.5f, paint);
-                canvas.drawCircle(ex2, ey2, 5.5f, paint);
-            }
-
-            // 7. Draw Player Survivor
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.rgb(70, 150, 235));
-            canvas.drawCircle(playerX, playerY, playerRadius, paint);
-            // Flashlight barrel indicator
-            paint.setStrokeWidth(7f);
-            paint.setColor(Color.rgb(220, 230, 245));
-            canvas.drawLine(
-                    playerX,
-                    playerY,
-                    playerX + (float) Math.cos(aimAngle) * (playerRadius + 14f),
-                    playerY + (float) Math.sin(aimAngle) * (playerRadius + 14f),
-                    paint
-            );
-
-            // 8. Draw Particles
-            paint.setStyle(Paint.Style.FILL);
-            for (Particle pt : particles) {
-                paint.setColor(pt.color);
-                canvas.drawCircle(pt.x, pt.y, 4.5f, paint);
-            }
-
-            // 9. Pitch-Black Darkness & Raycast Flashlight Cone Layer
-            int layerId = canvas.saveLayer(camX, camY, camX + sw, camY + sh, null);
-            darknessPaint.setStyle(Paint.Style.FILL);
-            darknessPaint.setColor(Color.argb(248, 2, 3, 6));
-            canvas.drawRect(camX, camY, camX + sw, camY + sh, darknessPaint);
-
-            // Soft close-range ambient survival aura around player
-            float auraRadius = flashlightOn ? 140f : 90f;
-            lightClearPaint.setShader(new RadialGradient(
-                    playerX, playerY, auraRadius,
-                    new int[]{Color.argb(255, 0, 0, 0), Color.argb(0, 0, 0, 0)},
-                    new float[]{0.2f, 1.0f},
-                    Shader.TileMode.CLAMP
-            ));
-            canvas.drawCircle(playerX, playerY, auraRadius, lightClearPaint);
-
-            // Raycast Directional Flashlight Beam
-            boolean flickerOff = (battery < 22f && rng.nextFloat() < 0.18f) || (dangerLevel > 0.75f && rng.nextFloat() < 0.10f);
-            if (flashlightOn && battery > 0f && !flickerOff) {
-                float beamRange = 540f;
-                float halfSpread = (float) Math.toRadians(34);
-                int rays = 36;
-                lightPolyPath.reset();
-                lightPolyPath.moveTo(playerX, playerY);
-                for (int i = 0; i <= rays; i++) {
-                    float rayAng = (aimAngle - halfSpread) + (2f * halfSpread * i / rays);
-                    float d = castRay(playerX, playerY, rayAng, beamRange);
-                    float rx = playerX + (float) Math.cos(rayAng) * d;
-                    float ry = playerY + (float) Math.sin(rayAng) * d;
-                    lightPolyPath.lineTo(rx, ry);
-                }
-                lightPolyPath.close();
-
-                lightClearPaint.setShader(new RadialGradient(
-                        playerX, playerY, beamRange,
-                        new int[]{Color.argb(255, 0, 0, 0), Color.argb(210, 0, 0, 0), Color.argb(0, 0, 0, 0)},
-                        new float[]{0f, 0.7f, 1f},
-                        Shader.TileMode.CLAMP
-                ));
-                canvas.drawPath(lightPolyPath, lightClearPaint);
-            }
-            canvas.restoreToCount(layerId);
-
-            // Warm volumetric tint inside flashlight beam
-            if (flashlightOn && battery > 0f && !flickerOff) {
-                coneGlowPaint.setStyle(Paint.Style.FILL);
-                coneGlowPaint.setColor(Color.argb(26, 255, 245, 195));
-                canvas.drawPath(lightPolyPath, coneGlowPaint);
-            }
-
-            // 10. Draw Acoustic Radar Pings (shows objective directions through darkness when triggered)
-            if (radarActiveTimer > 0f) {
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(4f);
-                for (Generator gen : generators) {
-                    if (!gen.repaired) {
-                        paint.setColor(Color.argb(210, 255, 215, 50));
-                        canvas.drawCircle(gen.x, gen.y, 45f + (2.5f - radarActiveTimer) * 25f, paint);
-                        drawDirectionIndicator(canvas, gen.x, gen.y, Color.rgb(255, 215, 50));
-                    }
-                }
-                if (generatorsDone >= generatorsNeeded) {
-                    paint.setColor(Color.argb(230, 50, 255, 120));
-                    canvas.drawCircle(exitX, exitY, 55f, paint);
-                    drawDirectionIndicator(canvas, exitX, exitY, Color.rgb(50, 255, 120));
-                }
-            }
-
-            // Always show glowing red monster eyes slightly through darkness when dangerously close
-            for (Monster m : monsters) {
-                float dist = (float) Math.hypot(playerX - m.x, playerY - m.y);
-                if (dist < 310f && hasLineOfSight(playerX, playerY, m.x, m.y)) {
-                    paint.setStyle(Paint.Style.FILL);
-                    paint.setColor(Color.argb(190, 255, 25, 25));
-                    canvas.drawCircle(m.x, m.y, 5f, paint);
-                }
-            }
-
+            draw3DHologramScene(canvas, vpHalfW, vpHalfH, true);
             canvas.restore();
 
-            // =================================================================
-            // SCREEN-SPACE HUD & DUAL VIRTUAL JOYSTICKS
-            // =================================================================
-            renderHUD(canvas, sw, sh);
-        }
+            // 2. Glowing Placement Guide Line for Ghost Paper Sheet Edge
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2.5f);
+            paint.setPathEffect(dashEffect);
+            paint.setColor(Color.argb(150, 0, 255, 200));
+            canvas.drawLine(40f, splitY, sw - 40f, splitY, paint);
+            paint.setPathEffect(null);
 
-        private void drawDirectionIndicator(Canvas canvas, float targetX, float targetY, int color) {
-            float ang = (float) Math.atan2(targetY - playerY, targetX - playerX);
-            float ix = playerX + (float) Math.cos(ang) * 95f;
-            float iy = playerY + (float) Math.sin(ang) * 95f;
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(color);
-            canvas.drawCircle(ix, iy, 9f, paint);
-        }
-
-        private void renderHUD(Canvas canvas, int sw, int sh) {
-            // Terror Red Vignette Border
-            if (dangerLevel > 0.05f || jumpscareFlash > 0f) {
-                int redAlpha = (int) Math.min(210, dangerLevel * 120 + jumpscareFlash * 170);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(42f);
-                paint.setColor(Color.argb(redAlpha, 195, 10, 20));
-                canvas.drawRect(0, 0, sw, sh, paint);
-            }
-
-            // Top Left Status Bars (Health, Stamina, Battery)
-            drawMeter(canvas, 40f, 34f, 240f, 22f, health / 100f, Color.rgb(220, 45, 55), "HP");
-            drawMeter(canvas, 40f, 68f, 240f, 22f, stamina / 100f, Color.rgb(65, 175, 255), "STM");
-            drawMeter(canvas, 40f, 102f, 240f, 22f, battery / 100f, Color.rgb(60, 235, 145), "BAT");
-
-            // Top Right Objective Counter
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.WHITE);
-            paint.setTextSize(30f);
-            paint.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText("NIGHT " + currentNight + "  |  GENERATORS: " + generatorsDone + "/" + generatorsNeeded, sw - 40f, 62f, paint);
-
-            if (statusBannerTimer > 0f) {
-                paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTextSize(28f);
-                paint.setColor(Color.rgb(255, 220, 110));
-                canvas.drawText(statusBanner, sw / 2f, 115f, paint);
-            }
-
-            // Left Virtual Joystick (Movement)
-            float leftBaseX = (movePointerId != -1) ? moveOriginX : 210f;
-            float leftBaseY = (movePointerId != -1) ? moveOriginY : sh - 200f;
-            float leftKnobX = (movePointerId != -1) ? moveCurrX : leftBaseX;
-            float leftKnobY = (movePointerId != -1) ? moveCurrY : leftBaseY;
-            drawJoystick(canvas, leftBaseX, leftBaseY, leftKnobX, leftKnobY, "MOVE");
-
-            // Right Virtual Joystick (Flashlight 360 Aim)
-            float rightBaseX = (aimPointerId != -1) ? aimOriginX : sw - 230f;
-            float rightBaseY = (aimPointerId != -1) ? aimOriginY : sh - 200f;
-            float rightKnobX = (aimPointerId != -1) ? aimCurrX : rightBaseX + (float) Math.cos(aimAngle) * 45f;
-            float rightKnobY = (aimPointerId != -1) ? aimCurrY : rightBaseY + (float) Math.sin(aimAngle) * 45f;
-            drawJoystick(canvas, rightBaseX, rightBaseY, rightKnobX, rightKnobY, "AIM LIGHT");
-
-            // Action Buttons (Flashlight Toggle, Sprint Hold, Sonar Radar Ping)
-            drawButton(canvas, btnFlashlight, flashlightOn ? "LIGHT: ON" : "LIGHT: OFF",
-                    flashlightOn ? Color.argb(170, 230, 185, 45) : Color.argb(150, 55, 65, 80));
-            drawButton(canvas, btnSprint, sprinting ? "SPRINTING" : "HOLD SPRINT",
-                    sprinting ? Color.argb(180, 45, 155, 235) : Color.argb(150, 45, 85, 130));
-            String radarLabel = (radarCooldown > 0f) ? "PING (" + (int) Math.ceil(radarCooldown) + "s)" : "SONAR PING";
-            drawButton(canvas, btnRadarPing, radarLabel,
-                    (radarCooldown <= 0f) ? Color.argb(165, 45, 185, 115) : Color.argb(120, 50, 55, 65));
-
-            // Overlays for Night Cleared or Game Over
-            if (gameState == STATE_NIGHT_CLEARED || gameState == STATE_GAME_OVER) {
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(Color.argb(215, 5, 6, 10));
-                canvas.drawRect(0, 0, sw, sh, paint);
-
-                paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTextSize(64f);
-                if (gameState == STATE_NIGHT_CLEARED) {
-                    paint.setColor(Color.rgb(65, 240, 130));
-                    canvas.drawText("NIGHT " + currentNight + " SURVIVED", sw / 2f, sh / 2f - 50f, paint);
-                    paint.setTextSize(32f);
-                    paint.setColor(Color.WHITE);
-                    canvas.drawText("TAP ANYWHERE TO DESCEND TO NIGHT " + (currentNight + 1), sw / 2f, sh / 2f + 35f, paint);
-                } else {
-                    paint.setColor(Color.rgb(235, 35, 45));
-                    canvas.drawText("YOU WERE CONSUMED BY THE DARK", sw / 2f, sh / 2f - 55f, paint);
-                    paint.setTextSize(32f);
-                    paint.setColor(Color.WHITE);
-                    canvas.drawText("Reached Night " + currentNight + "  |  Best Night: " + bestNight + "  |  Generators: " + totalGeneratorsRepaired, sw / 2f, sh / 2f + 15f, paint);
-                    paint.setColor(Color.rgb(255, 210, 90));
-                    canvas.drawText("TAP ANYWHERE TO TRY AGAIN", sw / 2f, sh / 2f + 80f, paint);
-                }
-            }
-        }
-
-        private void renderMenu(Canvas canvas, int sw, int sh) {
-            paint.setStyle(Paint.Style.FILL);
-            paint.setTextAlign(Paint.Align.CENTER);
-
-            paint.setColor(Color.rgb(225, 30, 40));
-            paint.setTextSize(78f);
-            canvas.drawText("SHADOW WARD", sw / 2f, sh * 0.28f, paint);
-
-            paint.setColor(Color.rgb(190, 200, 215));
-            paint.setTextSize(30f);
-            canvas.drawText("2D TOP-DOWN SURVIVAL HORROR  •  GALAXY A17 5G EDITION", sw / 2f, sh * 0.37f, paint);
-
-            paint.setColor(Color.rgb(150, 165, 180));
-            paint.setTextSize(25f);
-            canvas.drawText("• Repair all noisy generators in the dark asylum to unlock the Exit Elevator.", sw / 2f, sh * 0.50f, paint);
-            canvas.drawText("• Shine your beam on Weeping Statues to freeze them; turn your light OFF to hide from Stalkers.", sw / 2f, sh * 0.57f, paint);
-            canvas.drawText("• Use SONAR PING if you lose your way in the pitch-black corridors.", sw / 2f, sh * 0.64f, paint);
-
-            paint.setColor(Color.rgb(255, 215, 80));
-            paint.setTextSize(36f);
-            canvas.drawText("[ TAP ANYWHERE TO ENTER NIGHT 1  (BEST NIGHT: " + bestNight + ") ]", sw / 2f, sh * 0.81f, paint);
-        }
-
-        private void drawMeter(Canvas canvas, float x, float y, float w, float h, float pct, int color, String label) {
-            pct = Math.max(0f, Math.min(1f, pct));
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.argb(180, 25, 30, 38));
-            canvas.drawRoundRect(new RectF(x, y, x + w, y + h), 6f, 6f, paint);
-            paint.setColor(color);
-            canvas.drawRoundRect(new RectF(x, y, x + w * pct, y + h), 6f, 6f, paint);
-            paint.setColor(Color.WHITE);
+            paint.setColor(Color.argb(170, 0, 255, 200));
             paint.setTextSize(18f);
-            paint.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(label + " " + (int) (pct * 100) + "%", x + 10f, y + h - 5f, paint);
-        }
-
-        private void drawJoystick(Canvas canvas, float bx, float by, float kx, float ky, String label) {
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(4f);
-            paint.setColor(Color.argb(110, 200, 215, 235));
-            canvas.drawCircle(bx, by, 95f, paint);
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.argb(145, 220, 235, 255));
-            canvas.drawCircle(kx, ky, 42f, paint);
-
-            paint.setColor(Color.argb(160, 255, 255, 255));
-            paint.setTextSize(20f);
             paint.setTextAlign(Paint.Align.CENTER);
-            canvas.drawText(label, bx, by + 128f, paint);
+            canvas.drawText("▲ PLACE 45° GHOST PAPER SHEET ALONG THIS LINE ▲", sw * 0.5f, splitY + 22f, paint);
+
+            // 3. Render Glowing Neon Arcade Control Deck on Bottom 32% (like Demo #3)
+            renderControlDeck(canvas, sw, sh, splitY);
         }
 
-        private void drawButton(Canvas canvas, RectF rect, String text, int bgColor) {
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(bgColor);
-            canvas.drawRoundRect(rect, 18f, 18f, paint);
+        private void renderPyramid4WayLayout(Canvas canvas, int sw, int sh) {
+            float cx = sw * 0.5f;
+            float cy = sh * 0.5f;
+            float maxSquare = Math.min(sw, sh) * 0.46f * holoScale;
+
+            // Faint Diagonal X Alignment Guides for placing the 4-sided pyramid in the center
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(3f);
-            paint.setColor(Color.argb(180, 230, 240, 255));
-            canvas.drawRoundRect(rect, 18f, 18f, paint);
+            paint.setStrokeWidth(1.5f);
+            paint.setColor(Color.argb(75, 0, 220, 255));
+            canvas.drawLine(cx - maxSquare, cy - maxSquare, cx + maxSquare, cy + maxSquare, paint);
+            canvas.drawLine(cx - maxSquare, cy + maxSquare, cx + maxSquare, cy - maxSquare, paint);
 
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.WHITE);
-            paint.setTextSize(22f);
-            paint.setTextAlign(Paint.Align.CENTER);
-            canvas.drawText(text, rect.centerX(), rect.centerY() + 8f, paint);
-        }
+            // Render 4 Symmetrical Quadrants (Top=0°, Right=90°, Bottom=180°, Left=270°) facing inward
+            float quadOffset = maxSquare * 0.56f;
+            float quadHalfW = maxSquare * 0.42f;
+            float quadHalfH = maxSquare * 0.34f;
 
-        private void updateUIButtonBounds(int sw, int sh) {
-            btnFlashlight.set(sw - 470f, sh - 155f, sw - 340f, sh - 65f);
-            btnSprint.set(sw - 470f, sh - 265f, sw - 340f, sh - 175f);
-            btnRadarPing.set(sw - 470f, sh - 375f, sw - 340f, sh - 285f);
+            for (int q = 0; q < 4; q++) {
+                canvas.save();
+                canvas.translate(cx, cy);
+                canvas.rotate(q * 90f);
+                canvas.translate(0f, -quadOffset);
+                if (mirrorFlip) {
+                    canvas.scale(1f, -1f);
+                }
+                draw3DHologramScene(canvas, quadHalfW, quadHalfH, false);
+                canvas.restore();
+            }
+
+            // Render Corner Touch Controls outside the center pyramid (like Demo #1, #2, #4)
+            renderControlDeck(canvas, sw, sh, sh * 0.68f);
         }
 
         // =====================================================================
-        // MULTI-TOUCH INPUT HANDLING
+        // CORE 3D WIREFRAME TUNNEL & SPECTRAL GHOST RENDERER
+        // =====================================================================
+        private void draw3DHologramScene(Canvas canvas, float halfW, float halfH, boolean showTextHUD) {
+            // 1. Draw 3D Receding Neon Wireframe Corridor (Green -> Cyan gradient by depth)
+            int depthRings = 8;
+            float prevRx = 0f, prevRy = 0f, prevRw = 0f, prevRh = 0f;
+
+            paint.setStyle(Paint.Style.STROKE);
+            for (int i = 0; i < depthRings; i++) {
+                float z = 1.2f + ((i + (1.5f - tunnelScrollZ) / 1.5f) * 1.35f);
+                float invZ = 1.15f / z;
+                float cx = -camParallaxX * (1f - invZ) * halfW * 0.8f;
+                float cy = -camParallaxY * (1f - invZ) * halfH * 0.8f;
+                float rw = halfW * invZ;
+                float rh = halfH * invZ;
+
+                int alpha = (int) Math.max(25, Math.min(245, 265 - z * 20f));
+                int green = (int) Math.max(120, Math.min(255, 255 - i * 16));
+                int blue = (int) Math.max(90, Math.min(255, 130 + i * 18));
+                paint.setStrokeWidth(Math.max(1.5f, 4.5f * invZ));
+                paint.setColor(Color.argb(alpha, 0, green, blue));
+
+                canvas.drawRect(cx - rw, cy - rh, cx + rw, cy + rh, paint);
+
+                // Connect depth corners & grid lines for 3D perspective tunnel
+                if (i > 0) {
+                    int cornerAlpha = (int) (alpha * 0.75f);
+                    paint.setColor(Color.argb(cornerAlpha, 0, 230, 255));
+                    // 4 Main corners
+                    canvas.drawLine(prevRx - prevRw, prevRy - prevRh, cx - rw, cy - rh, paint);
+                    canvas.drawLine(prevRx + prevRw, prevRy - prevRh, cx + rw, cy - rh, paint);
+                    canvas.drawLine(prevRx - prevRw, prevRy + prevRh, cx - rw, cy + rh, paint);
+                    canvas.drawLine(prevRx + prevRw, prevRy + prevRh, cx + rw, cy + rh, paint);
+                    // Intermediate grid subdivisions on walls/floor/ceiling
+                    for (float f = -0.5f; f <= 0.5f; f += 0.5f) {
+                        canvas.drawLine(prevRx + prevRw * f, prevRy - prevRh, cx + rw * f, cy - rh, paint);
+                        canvas.drawLine(prevRx + prevRw * f, prevRy + prevRh, cx + rw * f, cy + rh, paint);
+                        canvas.drawLine(prevRx - prevRw, prevRy + prevRh * f, cx - rw, cy + rh * f, paint);
+                        canvas.drawLine(prevRx + prevRw, prevRy + prevRh * f, cx + rw, cy + rh * f, paint);
+                    }
+                }
+                prevRx = cx;
+                prevRy = cy;
+                prevRw = rw;
+                prevRh = rh;
+            }
+
+            // 2. Draw Pulse Nova Shockwave Ring if active
+            if (novaShockwaveZ >= 0f) {
+                float invZ = 1.15f / Math.max(1.1f, novaShockwaveZ);
+                float sx = -camParallaxX * (1f - invZ) * halfW * 0.8f;
+                float sy = -camParallaxY * (1f - invZ) * halfH * 0.8f;
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(7f * invZ);
+                paint.setColor(Color.rgb(255, 255, 110));
+                canvas.drawRect(sx - halfW * invZ, sy - halfH * invZ, sx + halfW * invZ, sy + halfH * invZ, paint);
+            }
+
+            // 3. Draw Holographic Ghosts (Sorted back-to-front by Z)
+            for (int i = ghosts.size() - 1; i >= 0; i--) {
+                HoloGhost g = ghosts.get(i);
+                float invZ = 1.15f / Math.max(1.05f, g.z);
+                float gx = (g.x - camParallaxX * (1f - invZ)) * halfW;
+                float gy = (g.y - camParallaxY * (1f - invZ)) * halfH;
+                float radius = Math.min(halfH * 0.65f, halfH * 0.55f * invZ);
+
+                if (g.type == HoloGhost.TYPE_SKULL) {
+                    drawHologramSkull(canvas, gx, gy, radius, g.hitFlash > 0f, g.phase);
+                } else if (g.type == HoloGhost.TYPE_WRAITH) {
+                    drawHologramWraith(canvas, gx, gy, radius * 1.25f, g.hitFlash > 0f, g.phase);
+                } else {
+                    drawHologramBanshee(canvas, gx, gy, radius * 1.1f, g.hitFlash > 0f, g.phase);
+                }
+            }
+
+            // 4. Draw Incoming Enemy Soul Orbs
+            for (SoulOrb orb : enemyOrbs) {
+                float invZ = 1.15f / Math.max(1.05f, orb.z);
+                float ox = (orb.x - camParallaxX * (1f - invZ)) * halfW;
+                float oy = (orb.y - camParallaxY * (1f - invZ)) * halfH;
+                float orad = Math.max(6f, 34f * invZ);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.argb(120, 255, 30, 70));
+                canvas.drawCircle(ox, oy, orad * 1.5f, paint);
+                paint.setColor(Color.rgb(255, 200, 220));
+                canvas.drawCircle(ox, oy, orad * 0.6f, paint);
+            }
+
+            // 5. Draw 3D Particles
+            paint.setStyle(Paint.Style.FILL);
+            for (HoloParticle p : particles) {
+                float invZ = 1.15f / Math.max(1.05f, p.z);
+                float px = (p.x - camParallaxX * (1f - invZ)) * halfW;
+                float py = (p.y - camParallaxY * (1f - invZ)) * halfH;
+                paint.setColor(p.color);
+                canvas.drawCircle(px, py, Math.max(2.5f, 8f * invZ), paint);
+            }
+
+            // 6. Draw 3D Laser Crosshair & Proton Beams
+            float targetX = aimX * halfW * 0.72f;
+            float targetY = aimY * halfH * 0.72f;
+
+            if (firingBeam) {
+                // Twin high-voltage proton beams from bottom corners into crosshair
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(7f);
+                paint.setColor(Color.argb(140, 255, 50, 90));
+                canvas.drawLine(-halfW * 0.75f, halfH * 0.85f, targetX, targetY, paint);
+                canvas.drawLine(halfW * 0.75f, halfH * 0.85f, targetX, targetY, paint);
+
+                paint.setStrokeWidth(2.8f);
+                paint.setColor(Color.rgb(255, 240, 180));
+                canvas.drawLine(-halfW * 0.75f, halfH * 0.85f, targetX, targetY, paint);
+                canvas.drawLine(halfW * 0.75f, halfH * 0.85f, targetX, targetY, paint);
+            }
+
+            // Glowing Red/Cyan Laser Crosshair (like Demo #3)
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2.5f);
+            paint.setColor(Color.rgb(255, 35, 65));
+            canvas.drawCircle(targetX, targetY, 22f, paint);
+            canvas.drawLine(targetX - 38f, targetY, targetX + 38f, targetY, paint);
+            canvas.drawLine(targetX, targetY - 38f, targetX, targetY + 38f, paint);
+
+            // 7. Draw Hexagonal Energy Shield if active
+            if (shieldActive) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(4f);
+                paint.setColor(Color.argb(190, 0, 255, 255));
+                canvas.drawCircle(0f, 0f, Math.min(halfW, halfH) * 0.75f, paint);
+            }
+
+            // 8. Floating Hologram Status Text (only in Ghost Paper primary view)
+            if (showTextHUD) {
+                paint.setStyle(Paint.Style.FILL);
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTextSize(22f);
+                paint.setColor(Color.rgb(0, 255, 210));
+                canvas.drawText("WAVE " + wave + "   |   SCORE: " + score + "   |   SHIELD: " + (int) playerShieldHP + "%", 0f, -halfH + 26f, paint);
+
+                if (gameOver) {
+                    paint.setColor(Color.rgb(255, 45, 75));
+                    paint.setTextSize(42f);
+                    canvas.drawText("HOLOGRAM BREACHED", 0f, -15f, paint);
+                    paint.setColor(Color.rgb(0, 255, 220));
+                    paint.setTextSize(24f);
+                    canvas.drawText("SCORE: " + score + "  (BEST: " + bestScore + ")  •  TAP SCREEN TO REBOOT", 0f, 32f, paint);
+                }
+            }
+        }
+
+        // Draw Detailed Neon Wireframe/Point-Cloud Skull (matches Demo #3!)
+        private void drawHologramSkull(Canvas canvas, float cx, float cy, float r, boolean hit, float phase) {
+            int mainCol = hit ? Color.WHITE : Color.rgb(60, 255, 195);
+            int glowCol = Color.argb(95, 0, 255, 160);
+
+            // Outer spectral aura
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(glowCol);
+            canvas.drawCircle(cx, cy, r * 1.25f, paint);
+
+            // Cranium dome & cheekbone outline
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, r * 0.08f));
+            paint.setColor(mainCol);
+            RectF cranium = new RectF(cx - r * 0.8f, cy - r * 0.9f, cx + r * 0.8f, cy + r * 0.35f);
+            canvas.drawArc(cranium, 160f, 220f, false, paint);
+
+            // Wireframe mesh latitude/longitude lines across cranium
+            canvas.drawArc(new RectF(cx - r * 0.45f, cy - r * 0.9f, cx + r * 0.45f, cy + r * 0.35f), 180f, 180f, false, paint);
+            canvas.drawLine(cx, cy - r * 0.9f, cx, cy + r * 0.7f, paint);
+            canvas.drawLine(cx - r * 0.72f, cy - r * 0.35f, cx + r * 0.72f, cy - r * 0.35f, paint);
+
+            // Jaw & chattering teeth
+            float jawDrop = (float) Math.abs(Math.sin(phase * 2.2f)) * r * 0.14f;
+            RectF jaw = new RectF(cx - r * 0.48f, cy + r * 0.2f, cx + r * 0.48f, cy + r * 0.75f + jawDrop);
+            canvas.drawRoundRect(jaw, r * 0.12f, r * 0.12f, paint);
+            for (float tx = -0.3f; tx <= 0.31f; tx += 0.2f) {
+                canvas.drawLine(cx + r * tx, cy + r * 0.2f, cx + r * tx, cy + r * 0.55f + jawDrop, paint);
+            }
+
+            // Glowing Eye Sockets
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(220, 255, 245));
+            canvas.drawCircle(cx - r * 0.32f, cy - r * 0.15f, r * 0.2f, paint);
+            canvas.drawCircle(cx + r * 0.32f, cy - r * 0.15f, r * 0.2f, paint);
+
+            // Nasal cavity triangle
+            tempPath.reset();
+            tempPath.moveTo(cx, cy - r * 0.02f);
+            tempPath.lineTo(cx - r * 0.13f, cy + r * 0.16f);
+            tempPath.lineTo(cx + r * 0.13f, cy + r * 0.16f);
+            tempPath.close();
+            canvas.drawPath(tempPath, paint);
+        }
+
+        // Draw Cyan & Crimson Spectral Wraith Boss (matches Demo #1 and #2!)
+        private void drawHologramWraith(Canvas canvas, float cx, float cy, float r, boolean hit, float phase) {
+            // Crimson outer energy tendrils
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2.5f, r * 0.07f));
+            paint.setColor(hit ? Color.WHITE : Color.rgb(255, 40, 85));
+            for (int i = -3; i <= 3; i++) {
+                float waveX = (float) Math.sin(phase + i) * r * 0.22f;
+                canvas.drawLine(cx + i * r * 0.2f, cy - r * 0.2f, cx + i * r * 0.32f + waveX, cy + r * 0.95f, paint);
+            }
+
+            // Cyan Spectral Torso, Claws & Hooded Skull
+            paint.setColor(hit ? Color.WHITE : Color.rgb(0, 245, 255));
+            paint.setStrokeWidth(Math.max(3f, r * 0.09f));
+            canvas.drawCircle(cx, cy - r * 0.45f, r * 0.32f, paint);
+            // Outstretched arms with claws
+            float armLift = (float) Math.sin(phase * 1.5f) * r * 0.18f;
+            canvas.drawLine(cx - r * 0.25f, cy - r * 0.2f, cx - r * 0.95f, cy - r * 0.05f + armLift, paint);
+            canvas.drawLine(cx + r * 0.25f, cy - r * 0.2f, cx + r * 0.95f, cy - r * 0.05f + armLift, paint);
+
+            // Glowing Crimson Eyes
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.rgb(255, 30, 60));
+            canvas.drawCircle(cx - r * 0.12f, cy - r * 0.46f, r * 0.09f, paint);
+            canvas.drawCircle(cx + r * 0.12f, cy - r * 0.46f, r * 0.09f, paint);
+        }
+
+        // Draw Electric Magenta/Blue Phase Banshee
+        private void drawHologramBanshee(Canvas canvas, float cx, float cy, float r, boolean hit, float phase) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2.5f, r * 0.08f));
+            paint.setColor(hit ? Color.WHITE : Color.rgb(220, 75, 255));
+            canvas.drawCircle(cx, cy, r * (0.75f + 0.12f * (float) Math.sin(phase * 3f)), paint);
+            paint.setColor(Color.rgb(80, 220, 255));
+            canvas.drawCircle(cx, cy - r * 0.15f, r * 0.45f, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            canvas.drawCircle(cx - r * 0.16f, cy - r * 0.2f, r * 0.09f, paint);
+            canvas.drawCircle(cx + r * 0.16f, cy - r * 0.2f, r * 0.09f, paint);
+        }
+
+        // =====================================================================
+        // BOTTOM ARCADE TOUCH CONTROL DECK (OUTSIDE THE GHOST PAPER SHEET)
+        // =====================================================================
+        private void renderControlDeck(Canvas canvas, int sw, int sh, float deckTopY) {
+            // Left Neon 3D Joystick (matches Demo #3 glowing cyan ring + mushroom stick)
+            float jbx = (joyPointerId != -1) ? joyBaseX : 210f;
+            float jby = (joyPointerId != -1) ? joyBaseY : sh - 135f;
+            float jkx = (joyPointerId != -1) ? joyKnobX : jbx;
+            float jky = (joyPointerId != -1) ? joyKnobY : jby;
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(5f);
+            paint.setColor(Color.rgb(0, 240, 255));
+            canvas.drawCircle(jbx, jby, 86f, paint);
+            paint.setStrokeWidth(2f);
+            paint.setColor(Color.argb(140, 0, 255, 190));
+            canvas.drawCircle(jbx, jby, 62f, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(180, 0, 235, 255));
+            canvas.drawCircle(jkx, jky, 38f, paint);
+
+            // Right Glowing Arcade Action Buttons (Beam, Nova, Shield)
+            drawArcadeButton(canvas, btnBeam, "FIRE BEAM", Color.rgb(255, 130, 30), firingBeam);
+            drawArcadeButton(canvas, btnNova, (novaCharge >= 100f) ? "NOVA READY" : "NOVA " + (int) novaCharge + "%",
+                    Color.rgb(255, 225, 45), novaCharge >= 100f);
+            drawArcadeButton(canvas, btnShield, "HEX SHIELD", Color.rgb(0, 235, 255), shieldActive);
+
+            // Center-Bottom Calibration & Mode Strip
+            drawMiniPillButton(canvas, btnToggleMode,
+                    displayMode == MODE_GHOST_PAPER ? "MODE: 45° GHOST PAPER" : "MODE: 4-WAY PYRAMID",
+                    Color.rgb(0, 220, 180));
+            drawMiniPillButton(canvas, btnToggleMirror,
+                    mirrorFlip ? "REFLECT FLIP: ON" : "DIRECT SCREEN: ON",
+                    Color.rgb(90, 190, 255));
+            drawMiniPillButton(canvas, btnScaleMinus, "SIZE -", Color.rgb(180, 190, 210));
+            drawMiniPillButton(canvas, btnScalePlus, "SIZE +", Color.rgb(180, 190, 210));
+        }
+
+        private void drawArcadeButton(Canvas canvas, RectF r, String label, int neonColor, boolean active) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(active ? 110 : 45, Color.red(neonColor), Color.green(neonColor), Color.blue(neonColor)));
+            canvas.drawOval(r, paint);
+
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(active ? 6f : 3.5f);
+            paint.setColor(neonColor);
+            canvas.drawOval(r, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            paint.setTextSize(19f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            canvas.drawText(label, r.centerX(), r.centerY() + 7f, paint);
+        }
+
+        private void drawMiniPillButton(Canvas canvas, RectF r, String text, int strokeCol) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(40, 0, 200, 255));
+            canvas.drawRoundRect(r, 14f, 14f, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2.2f);
+            paint.setColor(strokeCol);
+            canvas.drawRoundRect(r, 14f, 14f, paint);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            paint.setTextSize(17f);
+            paint.setTextAlign(Paint.Align.CENTER);
+            canvas.drawText(text, r.centerX(), r.centerY() + 6f, paint);
+        }
+
+        private void updateControlBounds(int sw, int sh) {
+            // Right Arcade Buttons on Bottom Strip
+            btnBeam.set(sw - 220f, sh - 210f, sw - 70f, sh - 60f);
+            btnShield.set(sw - 390f, sh - 175f, sw - 255f, sh - 45f);
+            btnNova.set(sw - 365f, sh - 305f, sw - 230f, sh - 190f);
+
+            // Center-Bottom Calibration Pills
+            float cx = sw * 0.5f;
+            btnToggleMode.set(cx - 220f, sh - 135f, cx - 10f, sh - 82f);
+            btnToggleMirror.set(cx + 10f, sh - 135f, cx + 220f, sh - 82f);
+            btnScaleMinus.set(cx - 140f, sh - 68f, cx - 15f, sh - 20f);
+            btnScalePlus.set(cx + 15f, sh - 68f, cx + 140f, sh - 20f);
+        }
+
+        // =====================================================================
+        // MULTI-TOUCH INPUT
         // =====================================================================
         @Override
         public boolean onTouchEvent(MotionEvent event) {
             int action = event.getActionMasked();
             int index = event.getActionIndex();
-            int pointerId = event.getPointerId(index);
+            int pid = event.getPointerId(index);
             float tx = event.getX(index);
             float ty = event.getY(index);
 
-            if (gameState != STATE_PLAYING) {
+            if (gameOver) {
                 if (action == MotionEvent.ACTION_DOWN) {
-                    if (gameState == STATE_NIGHT_CLEARED) {
-                        startNewGame(currentNight + 1);
-                    } else {
-                        startNewGame(1);
-                    }
+                    resetGame();
                 }
                 return true;
             }
@@ -1186,71 +839,58 @@ public class MainActivity extends Activity {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                 case MotionEvent.ACTION_POINTER_DOWN:
-                    if (btnFlashlight.contains(tx, ty)) {
-                        if (battery > 0f) {
-                            flashlightOn = !flashlightOn;
-                            soundSynth.playClick();
-                            vibrate(20);
+                    if (btnToggleMode.contains(tx, ty)) {
+                        displayMode = (displayMode == MODE_GHOST_PAPER) ? MODE_PYRAMID_4WAY : MODE_GHOST_PAPER;
+                        vibrate(25);
+                    } else if (btnToggleMirror.contains(tx, ty)) {
+                        mirrorFlip = !mirrorFlip;
+                        vibrate(25);
+                    } else if (btnScaleMinus.contains(tx, ty)) {
+                        holoScale = Math.max(0.65f, holoScale - 0.08f);
+                        vibrate(15);
+                    } else if (btnScalePlus.contains(tx, ty)) {
+                        holoScale = Math.min(1.35f, holoScale + 0.08f);
+                        vibrate(15);
+                    } else if (btnBeam.contains(tx, ty)) {
+                        beamPointerId = pid;
+                        firingBeam = true;
+                        vibrate(20);
+                    } else if (btnShield.contains(tx, ty)) {
+                        shieldPointerId = pid;
+                        shieldActive = true;
+                        soundSynth.triggerEffect(HoloSoundSynth.FX_SHIELD);
+                        vibrate(20);
+                    } else if (btnNova.contains(tx, ty)) {
+                        if (novaCharge >= 100f) {
+                            novaCharge = 0f;
+                            novaShockwaveZ = 1.2f;
+                            soundSynth.triggerEffect(HoloSoundSynth.FX_BANISH);
+                            vibrate(90);
                         }
-                    } else if (btnSprint.contains(tx, ty)) {
-                        sprintPointerId = pointerId;
-                        sprinting = true;
-                    } else if (btnRadarPing.contains(tx, ty)) {
-                        if (radarCooldown <= 0f) {
-                            radarActiveTimer = 2.5f;
-                            radarCooldown = 9.0f;
-                            ripples.add(new SoundRipple(playerX, playerY, 650f));
-                            alertMonstersToNoise(playerX, playerY, 650f);
-                            soundSynth.playGeneratorChime();
-                            setBanner("SONAR PING ACTIVE — BEWARE: MONSTERS HEARD THE PULSE!", 3.0f);
-                        }
-                    } else if (tx < getWidth() * 0.45f && movePointerId == -1) {
-                        movePointerId = pointerId;
-                        moveOriginX = tx;
-                        moveOriginY = ty;
-                        moveCurrX = tx;
-                        moveCurrY = ty;
-                    } else if (tx >= getWidth() * 0.45f && aimPointerId == -1) {
-                        aimPointerId = pointerId;
-                        aimOriginX = tx;
-                        aimOriginY = ty;
-                        aimCurrX = tx;
-                        aimCurrY = ty;
+                    } else if (tx < getWidth() * 0.45f && joyPointerId == -1) {
+                        joyPointerId = pid;
+                        joyBaseX = tx;
+                        joyBaseY = ty;
+                        joyKnobX = tx;
+                        joyKnobY = ty;
                     }
                     break;
 
                 case MotionEvent.ACTION_MOVE:
                     for (int i = 0; i < event.getPointerCount(); i++) {
-                        int pid = event.getPointerId(i);
-                        float px = event.getX(i);
-                        float py = event.getY(i);
-                        if (pid == movePointerId) {
-                            float dx = px - moveOriginX;
-                            float dy = py - moveOriginY;
+                        if (event.getPointerId(i) == joyPointerId) {
+                            float dx = event.getX(i) - joyBaseX;
+                            float dy = event.getY(i) - joyBaseY;
                             float dist = (float) Math.hypot(dx, dy);
-                            float maxR = 95f;
+                            float maxR = 85f;
                             if (dist > maxR) {
                                 dx = (dx / dist) * maxR;
                                 dy = (dy / dist) * maxR;
                             }
-                            moveCurrX = moveOriginX + dx;
-                            moveCurrY = moveOriginY + dy;
-                            moveInputX = dx / maxR;
-                            moveInputY = dy / maxR;
-                        } else if (pid == aimPointerId) {
-                            float dx = px - aimOriginX;
-                            float dy = py - aimOriginY;
-                            float dist = (float) Math.hypot(dx, dy);
-                            float maxR = 95f;
-                            if (dist > 10f) {
-                                aimAngle = (float) Math.atan2(dy, dx);
-                            }
-                            if (dist > maxR) {
-                                dx = (dx / dist) * maxR;
-                                dy = (dy / dist) * maxR;
-                            }
-                            aimCurrX = aimOriginX + dx;
-                            aimCurrY = aimOriginY + dy;
+                            joyKnobX = joyBaseX + dx;
+                            joyKnobY = joyBaseY + dy;
+                            joyVecX = dx / maxR;
+                            joyVecY = dy / maxR;
                         }
                     }
                     break;
@@ -1258,27 +898,26 @@ public class MainActivity extends Activity {
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_POINTER_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (pointerId == movePointerId) {
-                        movePointerId = -1;
-                        moveInputX = 0f;
-                        moveInputY = 0f;
-                    } else if (pointerId == aimPointerId) {
-                        aimPointerId = -1;
-                    } else if (pointerId == sprintPointerId) {
-                        sprintPointerId = -1;
-                        sprinting = false;
+                    if (pid == joyPointerId) {
+                        joyPointerId = -1;
+                        joyVecX = 0f;
+                        joyVecY = 0f;
+                    } else if (pid == beamPointerId) {
+                        beamPointerId = -1;
+                        firingBeam = false;
+                    } else if (pid == shieldPointerId) {
+                        shieldPointerId = -1;
+                        shieldActive = false;
                     }
                     break;
             }
             return true;
         }
 
-        // =====================================================================
-        // HELPERS & PROCEDURAL HORROR AUDIO SYNTHESIZER
-        // =====================================================================
-        private void setBanner(String msg, float duration) {
-            statusBanner = msg;
-            statusBannerTimer = duration;
+        private void spawnHoloSparks(float x, float y, float z, int color, int count) {
+            for (int i = 0; i < count; i++) {
+                particles.add(new HoloParticle(x, y, z, color, rng));
+            }
         }
 
         private void vibrate(long ms) {
@@ -1291,137 +930,92 @@ public class MainActivity extends Activity {
             }
         }
 
-        private float normalizeAngle(float a) {
-            while (a > Math.PI) a -= (float) (2 * Math.PI);
-            while (a < -Math.PI) a += (float) (2 * Math.PI);
-            return a;
-        }
+        // =====================================================================
+        // 3D ENTITIES & HOLOGRAM AUDIO SYNTHESIZER
+        // =====================================================================
+        private static class HoloGhost {
+            static final int TYPE_SKULL = 0;
+            static final int TYPE_WRAITH = 1;
+            static final int TYPE_BANSHEE = 2;
 
-        private float lerpAngle(float from, float to, float t) {
-            float diff = normalizeAngle(to - from);
-            return from + diff * Math.min(1f, t);
-        }
-
-        // Entities
-        private static class BloodDecal {
-            final float x, y, radius;
-            BloodDecal(float x, float y, float radius) {
-                this.x = x;
-                this.y = y;
-                this.radius = radius;
-            }
-        }
-
-        private static class Generator {
-            final float x, y;
-            float progress = 0f;
-            boolean repaired = false;
-            Generator(float x, float y) {
-                this.x = x;
-                this.y = y;
-            }
-        }
-
-        private static class Pickup {
-            static final int TYPE_BATTERY = 0;
-            static final int TYPE_MEDKIT = 1;
-            final float x, y;
+            float x, y, z, baseX, baseY;
             final int type;
-            Pickup(float x, float y, int type) {
+            float hp;
+            final float speedZ;
+            float phase = 0f;
+            float hitFlash = 0f;
+            float attackCooldown = 2.0f;
+            float teleportTimer = 1.8f;
+
+            HoloGhost(float x, float y, float z, int type, int wave) {
                 this.x = x;
                 this.y = y;
+                this.baseX = x;
+                this.baseY = y;
+                this.z = z;
                 this.type = type;
+                this.hp = (type == TYPE_WRAITH) ? (95f + wave * 18f) : (55f + wave * 12f);
+                this.speedZ = (type == TYPE_WRAITH ? 0.72f : 1.05f) + wave * 0.08f;
             }
         }
 
-        private static class Monster {
-            static final int TYPE_STALKER = 0;
-            static final int TYPE_STATUE = 1;
-            static final int TYPE_PHANTASM = 2;
-
-            float x, y, targetX, targetY;
-            final int type;
-            final float radius = 26f;
-            final float patrolSpeed;
-            final float chaseSpeed;
-            boolean chasing = false;
-            boolean frozenByBeam = false;
-            float alertTimer = 0f;
-            float stuckTimer = 0f;
-            float attackCooldown = 0f;
-
-            Monster(float x, float y, int type, int night) {
+        private static class SoulOrb {
+            final float x, y;
+            float z;
+            SoulOrb(float x, float y, float z) {
                 this.x = x;
                 this.y = y;
-                this.targetX = x;
-                this.targetY = y;
-                this.type = type;
-                this.patrolSpeed = (type == TYPE_PHANTASM) ? (78f + night * 6f) : (115f + night * 8f);
-                this.chaseSpeed = 215f + night * 12f;
+                this.z = z;
             }
         }
 
-        private static class Particle {
-            float x, y, vx, vy, life;
+        private static class HoloParticle {
+            float x, y, z, vx, vy, vz, life;
             final int color;
-            Particle(float x, float y, int color) {
+            HoloParticle(float x, float y, float z, int color, Random rng) {
                 this.x = x;
                 this.y = y;
-                double ang = Math.random() * Math.PI * 2;
-                float spd = 40f + (float) (Math.random() * 140f);
-                this.vx = (float) Math.cos(ang) * spd;
-                this.vy = (float) Math.sin(ang) * spd;
-                this.life = 0.35f + (float) (Math.random() * 0.35f);
+                this.z = z;
+                this.vx = (rng.nextFloat() - 0.5f) * 1.4f;
+                this.vy = (rng.nextFloat() - 0.5f) * 1.4f;
+                this.vz = (rng.nextFloat() - 0.5f) * 2.0f;
+                this.life = 0.35f + rng.nextFloat() * 0.35f;
                 this.color = color;
             }
         }
 
-        private static class SoundRipple {
-            final float x, y, maxRadius;
-            float radius = 10f;
-            SoundRipple(float x, float y, float maxRadius) {
-                this.x = x;
-                this.y = y;
-                this.maxRadius = maxRadius;
-            }
-        }
+        private static class HoloSoundSynth implements Runnable {
+            static final int FX_BANISH = 1;
+            static final int FX_SHIELD = 2;
+            static final int FX_ORB = 3;
+            static final int FX_HURT = 4;
 
-        // Real-time procedural sound synthesizer using Android AudioTrack
-        private static class SoundSynthesizer implements Runnable {
-            private Thread audioThread;
+            private Thread thread;
             private volatile boolean active = false;
-            private volatile float dangerIntensity = 0f;
-            private volatile int effectTrigger = 0; // 1=click, 2=heartbeat, 3=pickup, 4=chime, 5=shriek
+            private volatile boolean laserActive = false;
+            private volatile int pendingFx = 0;
 
             void start() {
                 active = true;
-                audioThread = new Thread(this, "HorrorAudioSynth");
-                audioThread.start();
+                thread = new Thread(this, "HoloAudio");
+                thread.start();
             }
 
             void stop() {
                 active = false;
                 try {
-                    if (audioThread != null) audioThread.join(300);
+                    if (thread != null) thread.join(300);
                 } catch (InterruptedException ignored) {
                 }
             }
 
-            void setDangerIntensity(float d) { this.dangerIntensity = d; }
-            void playClick() { this.effectTrigger = 1; }
-            void playHeartbeat() { if (this.effectTrigger == 0) this.effectTrigger = 2; }
-            void playPickup() { this.effectTrigger = 3; }
-            void playGeneratorChime() { this.effectTrigger = 4; }
-            void playJumpscareShriek() { this.effectTrigger = 5; }
+            void setLaserActive(boolean on) { this.laserActive = on; }
+            void triggerEffect(int fx) { this.pendingFx = fx; }
 
             @Override
             public void run() {
                 final int sampleRate = 22050;
-                int minBuf = AudioTrack.getMinBufferSize(
-                        sampleRate,
-                        AudioFormat.CHANNEL_OUT_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT
-                );
+                int minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 if (minBuf <= 0) return;
 
                 AudioTrack track;
@@ -1441,70 +1035,57 @@ public class MainActivity extends Activity {
                                 .setTransferMode(AudioTrack.MODE_STREAM)
                                 .build();
                     } else {
-                        track = new AudioTrack(
-                                AudioManager.STREAM_MUSIC,
-                                sampleRate,
-                                AudioFormat.CHANNEL_OUT_MONO,
-                                AudioFormat.ENCODING_PCM_16BIT,
-                                minBuf,
-                                AudioTrack.MODE_STREAM
-                        );
+                        track = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate,
+                                AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf, AudioTrack.MODE_STREAM);
                     }
                     track.play();
                 } catch (Exception e) {
                     return;
                 }
 
-                short[] buffer = new short[512];
-                double dronePhase = 0.0;
-                int currentEffect = 0;
-                int effectSampleIndex = 0;
+                short[] buf = new short[512];
+                double phase = 0.0;
+                double laserPhase = 0.0;
+                int curFx = 0;
+                int fxSample = 0;
 
                 while (active) {
-                    if (effectTrigger != 0) {
-                        currentEffect = effectTrigger;
-                        effectTrigger = 0;
-                        effectSampleIndex = 0;
+                    if (pendingFx != 0) {
+                        curFx = pendingFx;
+                        pendingFx = 0;
+                        fxSample = 0;
                     }
+                    for (int i = 0; i < buf.length; i++) {
+                        phase += (2.0 * Math.PI * 52.0) / sampleRate;
+                        double sig = Math.sin(phase) * 0.08;
 
-                    for (int i = 0; i < buffer.length; i++) {
-                        // Eerie low sub-bass horror drone
-                        double droneFreq = 48.0 + dangerIntensity * 28.0;
-                        dronePhase += (2.0 * Math.PI * droneFreq) / sampleRate;
-                        double sample = Math.sin(dronePhase) * (0.08 + dangerIntensity * 0.14);
-
-                        // Overlay active sound effect
-                        if (currentEffect != 0) {
-                            double t = effectSampleIndex / (double) sampleRate;
-                            effectSampleIndex++;
-                            if (currentEffect == 1) { // Flashlight click
-                                if (t < 0.03) sample += (Math.random() - 0.5) * 0.7;
-                                else currentEffect = 0;
-                            } else if (currentEffect == 2) { // Heartbeat thump
-                                if (t < 0.14) sample += Math.sin(2.0 * Math.PI * 55.0 * t) * Math.exp(-t * 22.0) * 0.65;
-                                else currentEffect = 0;
-                            } else if (currentEffect == 3) { // Pickup tone
-                                if (t < 0.18) sample += Math.sin(2.0 * Math.PI * 520.0 * t) * 0.35;
-                                else currentEffect = 0;
-                            } else if (currentEffect == 4) { // Generator online chord
-                                if (t < 0.35) sample += Math.sin(2.0 * Math.PI * (440.0 + t * 300.0) * t) * 0.4;
-                                else currentEffect = 0;
-                            } else if (currentEffect == 5) { // Jumpscare shriek
-                                if (t < 0.45) {
-                                    sample += (Math.sin(2.0 * Math.PI * 880.0 * t) + (Math.random() - 0.5)) * 0.55;
-                                } else {
-                                    currentEffect = 0;
-                                }
-                            }
+                        if (laserActive) {
+                            laserPhase += (2.0 * Math.PI * 195.0) / sampleRate;
+                            sig += (Math.sin(laserPhase) + Math.sin(laserPhase * 2.5) * 0.5) * 0.22;
                         }
 
-                        if (sample > 1.0) sample = 1.0;
-                        if (sample < -1.0) sample = -1.0;
-                        buffer[i] = (short) (sample * 32767);
+                        if (curFx != 0) {
+                            double t = fxSample++ / (double) sampleRate;
+                            if (curFx == FX_BANISH) {
+                                if (t < 0.28) sig += Math.sin(2.0 * Math.PI * (320.0 + t * 900.0) * t) * 0.45;
+                                else curFx = 0;
+                            } else if (curFx == FX_SHIELD) {
+                                if (t < 0.16) sig += Math.sin(2.0 * Math.PI * 660.0 * t) * 0.35;
+                                else curFx = 0;
+                            } else if (curFx == FX_ORB) {
+                                if (t < 0.14) sig += Math.sin(2.0 * Math.PI * (480.0 - t * 1200.0) * t) * 0.3;
+                                else curFx = 0;
+                            } else if (curFx == FX_HURT) {
+                                if (t < 0.35) sig += (Math.sin(2.0 * Math.PI * 110.0 * t) + (Math.random() - 0.5)) * 0.5;
+                                else curFx = 0;
+                            }
+                        }
+                        if (sig > 1.0) sig = 1.0;
+                        if (sig < -1.0) sig = -1.0;
+                        buf[i] = (short) (sig * 32767);
                     }
-                    track.write(buffer, 0, buffer.length);
+                    track.write(buf, 0, buf.length);
                 }
-
                 try {
                     track.stop();
                     track.release();
@@ -1513,3 +1094,4 @@ public class MainActivity extends Activity {
             }
         }
     }
+                            }
